@@ -23,7 +23,17 @@ sound, export. Nothing else is in the app.
    can't find ffmpeg, the Log panel says so and you can set the path in
    `settings.toml`.
 
-Windows and Linux builds aren't released yet; see Building.
+**Windows** (x64 and Arm): unzip `splice9000-<version>-windows-<x64|arm64>.zip`
+anywhere and run `splice9000.exe`. Windows may warn about an unknown
+publisher the first time (the app isn't signed). Put ffmpeg on your PATH
+(for example `winget install ffmpeg`).
+
+**Linux** (x64 and Arm): unpack `splice9000-<version>-linux-<x64|arm64>.tar.gz`
+and run `./install.sh` inside it to add splice9000 to your app menu
+(`./install.sh --remove` takes it out). Install ffmpeg from your
+distribution (`sudo apt install ffmpeg`).
+
+Windows and Linux downloads start with 0.0.2; 0.0.1 was Mac only.
 
 ## Making a video
 
@@ -137,9 +147,10 @@ What changed these numbers, and what didn't work:
 - Scrubbing starts ffmpeg for every frame shown (~95 ms each); fast
   dragging shows fewer frames, never stale ones.
 - No clip thumbnails or audio waveforms on the timeline.
-- Tested on macOS only. Windows and Linux use the same code (the window code
-  comes from Folio, which runs on all three) but haven't been built or run.
-  Windows doesn't watch the config folder yet.
+- Used by hand on macOS only. Windows and Linux are built, tested and started
+  with a sample edit by CI on every push (screenshots are kept), but not
+  used by a person yet. Windows doesn't watch the config folder yet, so
+  config changes there apply on the next start.
 - Dragging panels and dividers is tested with real pointer input fed through
   egui, not by hand with a mouse. Menu items weren't clicked in testing; the
   menu bar was checked by eye.
@@ -151,4 +162,11 @@ cargo build --release
 ```
 
 `cargo test` runs the tests, including a real export through ffmpeg when
-it's installed.
+it's installed. `scripts/package.sh` makes this system's download in
+`dist/`, and `python3 scripts/sample.py <folder>` makes two sample clips and
+a session to try the app with.
+
+Every push builds and tests macOS, Windows and Linux on GitHub Actions
+(`.github/workflows/release.yml`). To release: bump `version` in
+Cargo.toml, write `docs/releases/v<version>.md`, push, then push a tag
+`v<version>`; the workflow publishes the release with every download.

@@ -118,7 +118,11 @@ shows the half (or the middle) it would land in.
 
 `shell/` is Folio's: winit and egui, with pixels drawn by the CPU into a
 buffer shared with the window server (two on macOS, see the README), and
-only the screen tiles that changed are drawn.
+only the screen tiles that changed are drawn. On Windows and Linux the whole
+buffer is presented until one frame has reached a visible window: the first
+frame is drawn while the window is still hidden, those systems drop it, and
+sending only changed areas after that left most of the window blank (found
+by CI's screenshots).
 
 ## Compatibility
 
