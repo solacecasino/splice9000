@@ -1,6 +1,6 @@
 [package]
 name = "splice9000"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 description = "A bare, modular video editor: cut clips on a timeline and export, with a layout you rearrange like foobar2000."
 license = "MIT"
