@@ -206,18 +206,23 @@ mod other {
     pub struct Surface {
         surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
         size: (u32, u32),
+        /// Nothing has been shown in a visible window yet. The first frame
+        /// is drawn while the window is still hidden, and Windows and X11
+        /// drop what's presented to a hidden window; sending only the
+        /// changed parts after that left the rest of the window blank.
+        unshown: bool,
     }
 
     impl Surface {
         pub fn new(window: Arc<Window>) -> Result<Self, String> {
             let context = softbuffer::Context::new(window.clone()).map_err(|e| e.to_string())?;
             let surface = softbuffer::Surface::new(&context, window).map_err(|e| e.to_string())?;
-            Ok(Self { surface, size: (0, 0) })
+            Ok(Self { surface, size: (0, 0), unshown: true })
         }
 
         pub fn draw(
             &mut self,
-            _window: &Window,
+            window: &Window,
             width: u32,
             height: u32,
             paint: impl FnOnce(&mut Target<'_>, u8) -> Vec<IRect>,
@@ -231,6 +236,14 @@ mod other {
             let age = buffer.age();
             let mut target = Target { px: &mut buffer, stride: width as usize, width: width as usize, height: height as usize };
             let damage = paint(&mut target, age);
+            // The whole buffer, until a frame has reached a visible window.
+            let whole = self.unshown;
+            if window.is_visible() != Some(false) {
+                self.unshown = false;
+            }
+            if whole {
+                return buffer.present().map_err(|e| e.to_string());
+            }
             if damage.is_empty() && age != 0 {
                 return Ok(());
             }
