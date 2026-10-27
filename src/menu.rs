@@ -61,6 +61,7 @@ pub fn panel_commands() -> impl Iterator<Item = String> {
 /// keys.toml's "cmd+shift+z" as a menu accelerator, "CmdOrCtrl+Shift+Z".
 /// Only keys with cmd or ctrl go in menus: a plain key there would be
 /// taken from every text field.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn accelerator(key: &str) -> Option<String> {
     let parts: Vec<&str> = key.split('+').collect();
     if !parts.iter().any(|p| *p == "cmd" || *p == "ctrl") {

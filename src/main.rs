@@ -1,3 +1,6 @@
+// No console window behind the app on Windows.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 //! splice9000: a bare, modular video editor.
 //!
 //! One owner of state: everything lives in `App`, on the interface thread.
@@ -116,6 +119,10 @@ pub struct App {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("splice9000 {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     let dir = config_dir();
     let _ = std::fs::create_dir_all(&dir);
     crash_report(&dir);

@@ -1,0 +1,250 @@
+# Builds and tests splice9000 on every system it runs on: macOS (one
+# universal app, also run on an Intel Mac), Windows (x64 and Arm) and Linux
+# (x64 and Arm). Every machine runs the tests with ffmpeg installed, so a
+# real export runs on each; then each download is unpacked and started with
+# a sample edit loaded, and a screenshot of it is kept. Pushing a tag like
+# v0.0.2 also publishes a GitHub release with every download, using
+# docs/releases/<tag>.md as the notes; any other push runs the same checks
+# without releasing.
+name: Release
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # The export test fails, rather than skips, without ffmpeg.
+  SPLICE9000_REQUIRE_FFMPEG: "1"
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: ffmpeg
+        run: brew install ffmpeg
+      - name: Test
+        run: cargo test
+      - name: Package
+        run: scripts/package.sh
+      - name: Check the download
+        run: |
+          set -e
+          rm -rf x && ditto -x -k dist/splice9000-*-macos-universal.zip x
+          app=x/splice9000.app/Contents/MacOS/splice9000
+          lipo -archs "$app" | grep -q x86_64
+          lipo -archs "$app" | grep -q arm64
+          codesign -v x/splice9000.app
+          "$app" --version
+      - name: Screenshot with a sample edit
+        timeout-minutes: 3
+        run: |
+          mkdir -p shots
+          export SPLICE9000_CONFIG_DIR=$(python3 scripts/sample.py sample | tail -1)
+          x/splice9000.app/Contents/MacOS/splice9000 &
+          pid=$!
+          sleep 8
+          kill -0 $pid
+          screencapture -x shots/macos.png
+          kill $pid
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splice9000-macos
+          path: dist/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-macos
+          path: shots/
+
+  # The universal download's Intel half, on an Intel Mac.
+  intel:
+    needs: mac
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: ffmpeg
+        run: brew install ffmpeg
+      - name: Test, built for Intel
+        run: cargo test
+      - uses: actions/download-artifact@v4
+        with:
+          name: splice9000-macos
+          path: dist
+      - name: Check the download runs on Intel
+        run: |
+          set -e
+          uname -m
+          rm -rf x && ditto -x -k dist/splice9000-*-macos-universal.zip x
+          arch -x86_64 x/splice9000.app/Contents/MacOS/splice9000 --version
+
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, arch: x64, ffmpeg: win64 }
+          - { os: windows-11-arm, arch: arm64, ffmpeg: winarm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: ffmpeg (BtbN's builds, for this processor)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ffmpeg && cd ffmpeg
+          gh release download latest --repo BtbN/FFmpeg-Builds -p "ffmpeg-master-latest-${{ matrix.ffmpeg }}-gpl.zip"
+          unzip -q ffmpeg-*.zip
+          echo "$(cygpath -w "$(echo $PWD/ffmpeg-*/bin)")" >> "$GITHUB_PATH"
+      - name: Test
+        shell: bash
+        run: |
+          ffmpeg -version | head -1
+          cargo test
+      - name: Package
+        shell: bash
+        run: |
+          scripts/package.sh
+          # Every file named for this machine, or the release would mix them up.
+          for f in dist/*; do case "$f" in *-${{ matrix.arch }}.*) ;; *) echo "::error::$f isn't named ${{ matrix.arch }}"; exit 1 ;; esac; done
+      - name: Check the download
+        shell: bash
+        run: |
+          set -e
+          rm -rf x && mkdir x && cd x && unzip -q ../dist/splice9000-*-windows-*.zip
+          ls
+          ./splice9000.exe --version
+      - name: Screenshot with a sample edit
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force shots | Out-Null
+          $env:SPLICE9000_CONFIG_DIR = (python scripts/sample.py sample | Select-Object -Last 1)
+          $p = Start-Process -FilePath x\splice9000.exe -PassThru
+          Start-Sleep 10
+          if ($p.HasExited) { throw "splice9000 exited: $($p.ExitCode)" }
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $img = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($img)
+          $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $img.Save("shots\windows-${{ matrix.arch }}.png")
+          Stop-Process -Id $p.Id
+          Get-ChildItem $env:SPLICE9000_CONFIG_DIR
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splice9000-windows-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-windows-${{ matrix.arch }}
+          path: shots/
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: x64 }
+          - { os: ubuntu-22.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.os }}   # an older glibc, so it runs on more distros
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          # ALSA for sound (built against), ffmpeg, and a screen to run on.
+          sudo apt-get install -y pkg-config libasound2-dev libxkbcommon-x11-0 ffmpeg \
+            xvfb openbox imagemagick desktop-file-utils
+      - name: Test
+        run: cargo test
+      - name: Package
+        run: |
+          scripts/package.sh
+          for f in dist/*; do case "$f" in *-${{ matrix.arch }}.*) ;; *) echo "::error::$f isn't named ${{ matrix.arch }}"; exit 1 ;; esac; done
+      - name: Check the download and its app menu entry
+        run: |
+          set -e
+          mkdir -p x && tar xzf dist/splice9000-*-linux-*.tar.gz -C x
+          app=$(echo x/splice9000-*/splice9000)
+          "$app" --version
+          export HOME=$PWD/home XDG_DATA_HOME=$PWD/home/.local/share
+          mkdir -p "$HOME"
+          x/splice9000-*/install.sh
+          desktop-file-validate "$XDG_DATA_HOME/applications/splice9000.desktop"
+          test -f "$XDG_DATA_HOME/icons/hicolor/256x256/apps/splice9000.png"
+          exe=$(sed -n 's/^Exec="\(.*\)"$/\1/p' "$XDG_DATA_HOME/applications/splice9000.desktop")
+          "$exe" --version
+          x/splice9000-*/install.sh --remove
+          test ! -e "$XDG_DATA_HOME/applications/splice9000.desktop"
+      - name: Screenshot with a sample edit
+        timeout-minutes: 3
+        run: |
+          mkdir -p shots
+          export DISPLAY=:99 SPLICE9000_CONFIG_DIR=$(python3 scripts/sample.py sample | tail -1)
+          Xvfb :99 -screen 0 1440x900x24 &
+          sleep 2
+          openbox &
+          sleep 1
+          app=$(echo x/splice9000-*/splice9000)
+          "$app" &
+          pid=$!
+          sleep 8
+          kill -0 $pid
+          import -window root "shots/linux-${{ matrix.arch }}.png"
+          kill $pid
+      - uses: actions/upload-artifact@v4
+        with:
+          name: splice9000-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-linux-${{ matrix.arch }}
+          path: shots/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [mac, intel, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: splice9000-*
+      - name: Gather, refusing two files with the same name
+        run: |
+          mkdir out
+          for f in dist/*/*; do
+            [ -e "out/${f##*/}" ] && { echo "::error::two builds made ${f##*/}"; exit 1; }
+            mv "$f" out/
+          done
+          ls -l out
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          notes="docs/releases/${tag}.md"
+          if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --generate-notes; fi
+          gh release create "$tag" out/* --title "splice9000 ${tag#v}" "$@"

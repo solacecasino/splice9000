@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=splice9000
+GenericName=Video Editor
+Comment=A bare, modular video editor
+Exec=splice9000
+Icon=splice9000
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=video;editor;cut;timeline;
+StartupWMClass=splice9000

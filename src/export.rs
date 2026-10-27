@@ -228,7 +228,10 @@ mod tests {
     /// joined. Skipped where ffmpeg isn't installed.
     #[test]
     fn exports_with_ffmpeg() {
-        let Some(tools) = Tools::find("") else { return };
+        let Some(tools) = Tools::find("") else {
+            assert!(std::env::var_os("SPLICE9000_REQUIRE_FFMPEG").is_none(), "ffmpeg wasn't found");
+            return;
+        };
         let dir = std::env::temp_dir().join(format!("splice9000-export-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let make = |name: &str, extra: &[&str]| {

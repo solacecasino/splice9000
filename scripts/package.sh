@@ -1,10 +1,48 @@
 #!/bin/sh
-# Builds dist/splice9000-<version>-macos-universal.zip: splice9000.app with
-# its icon, for Apple Silicon and Intel Macs, ad-hoc signed.
+# Makes this system's download in dist/:
+#   macOS:   splice9000-<v>-macos-universal.zip (Apple Silicon and Intel)
+#   Windows: splice9000-<v>-windows-<x64|arm64>.zip
+#   Linux:   splice9000-<v>-linux-<x64|arm64>.tar.gz, with install.sh
 # Usage: scripts/package.sh
 set -e
 cd "$(dirname "$0")/.."
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+mkdir -p dist
+
+# What cargo builds for, not what the shell says: on Arm Windows, Git Bash
+# is an x64 program and reports x64.
+arch() {
+  case "$(rustc -vV | sed -n 's/^host: //p')" in
+    aarch64*) echo arm64 ;;
+    *) echo x64 ;;
+  esac
+}
+
+case "$(uname -s)" in
+  Linux)
+    cargo build --release
+    d=splice9000-$VERSION-linux-$(arch)
+    rm -rf target/stage && mkdir -p "target/stage/$d"
+    cp target/release/splice9000 README.md LICENSE "target/stage/$d/"
+    cp packaging/linux/install.sh packaging/linux/splice9000.desktop "target/stage/$d/"
+    cp assets/icon-256.png "target/stage/$d/splice9000.png"
+    tar -czf "dist/$d.tar.gz" -C target/stage "$d"
+    ls -la dist
+    exit 0
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    cargo build --release
+    rm -rf target/stage && mkdir -p target/stage
+    cp target/release/splice9000.exe README.md LICENSE target/stage/
+    out="dist/splice9000-$VERSION-windows-$(arch).zip"
+    rm -f "$out"
+    (cd target/stage && python -m zipfile -c "../../$out" *)
+    ls -la dist
+    exit 0
+    ;;
+esac
+
+# macOS
 APP=target/splice9000.app
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
@@ -50,7 +88,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 codesign --force --deep --sign - "$APP"
-mkdir -p dist
 rm -f "dist/splice9000-$VERSION-macos-universal.zip"
 # ditto keeps the signature, permissions and icon intact.
 ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/splice9000-$VERSION-macos-universal.zip"
