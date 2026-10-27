@@ -129,7 +129,9 @@ jobs:
           rm -rf x && mkdir x && cd x && unzip -q ../dist/splice9000-*-windows-*.zip
           ls
           ./splice9000.exe --version
+      # Arm runners sit on Windows' first-run privacy screen, over everything.
       - name: Screenshot with a sample edit
+        if: matrix.arch == 'x64'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force shots | Out-Null
@@ -154,6 +156,7 @@ jobs:
         if: always()
         with:
           name: screenshots-windows-${{ matrix.arch }}
+          if-no-files-found: ignore
           path: shots/
 
   linux:
@@ -173,7 +176,7 @@ jobs:
           sudo apt-get update
           # ALSA for sound (built against), ffmpeg, and a screen to run on.
           sudo apt-get install -y pkg-config libasound2-dev libxkbcommon-x11-0 ffmpeg \
-            xvfb openbox imagemagick desktop-file-utils
+            xvfb openbox imagemagick xdotool desktop-file-utils
       - name: Test
         run: cargo test
       - name: Package
@@ -207,8 +210,15 @@ jobs:
           app=$(echo x/splice9000-*/splice9000)
           "$app" &
           pid=$!
-          sleep 8
-          kill -0 $pid
+          # Wait for the window itself, not a fixed time.
+          for i in $(seq 60); do
+            xdotool search --onlyvisible --name splice9000 >/dev/null && break
+            kill -0 $pid
+            sleep 0.5
+          done
+          xdotool search --onlyvisible --name splice9000 || { echo "::error::no splice9000 window after 30 s"; exit 1; }
+          echo "window after $i tries"
+          sleep 3
           import -window root "shots/linux-${{ matrix.arch }}.png"
           kill $pid
       - uses: actions/upload-artifact@v4
