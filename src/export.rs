@@ -51,6 +51,30 @@ impl Format {
     }
 }
 
+/// The encoders a format asks ffmpeg for, in settings.toml's format or an
+/// adapter's `preset`: what must be in [`Tools::encoders`] to export it.
+pub fn encoders_needed(s: &Settings, preset: Option<&ExportSpec>) -> Vec<String> {
+    let video = !preset.is_some_and(|p| p.no_video);
+    let audio = !preset.is_some_and(|p| p.no_audio);
+    let mut args: Vec<String> = Vec::new();
+    if video {
+        match preset.and_then(|p| p.video.as_ref()) {
+            Some(v) => args.extend(v.iter().cloned()),
+            None => args.extend(["-c:v".into(), s.video_codec.clone()]),
+        }
+    }
+    if audio {
+        match preset.and_then(|p| p.audio.as_ref()) {
+            Some(a) => args.extend(a.iter().cloned()),
+            None => args.extend(["-c:a".into(), s.audio_codec.clone()]),
+        }
+    }
+    args.windows(2)
+        .filter(|w| ["-c:v", "-c:a", "-vcodec", "-acodec", "-codec:v", "-codec:a"].contains(&w[0].as_str()) && w[1] != "copy")
+        .map(|w| w[1].clone())
+        .collect()
+}
+
 /// ffmpeg's arguments for writing `timeline` to `out`, in settings.toml's
 /// format or an adapter's `preset`.
 pub fn args(timeline: &Timeline, media: &[Media], fmt: Format, s: &Settings, preset: Option<&ExportSpec>, out: &Path) -> Vec<String> {
@@ -260,6 +284,22 @@ mod tests {
     }
 
     #[test]
+    fn names_the_encoders_a_format_needs() {
+        let s = Settings::default();
+        assert_eq!(encoders_needed(&s, None), ["libx264", "aac"]);
+        let webm = ExportSpec {
+            video: Some(vec!["-c:v".into(), "libvpx-vp9".into(), "-crf".into(), "32".into()]),
+            audio: Some(vec!["-c:a".into(), "libopus".into()]),
+            ..ExportSpec::default()
+        };
+        assert_eq!(encoders_needed(&s, Some(&webm)), ["libvpx-vp9", "libopus"]);
+        let gif = ExportSpec { video: Some(vec!["-loop".into(), "0".into()]), no_audio: true, ..ExportSpec::default() };
+        assert!(encoders_needed(&s, Some(&gif)).is_empty());
+        let sound = ExportSpec { no_video: true, ..ExportSpec::default() };
+        assert_eq!(encoders_needed(&s, Some(&sound)), ["aac"]);
+    }
+
+    #[test]
     fn presets_change_size_codecs_and_tracks() {
         let m = vec![media(1920, 1080, 30.0, true), media(1280, 720, 25.0, false)];
         let t = Timeline::new(vec![Clip { media: 0, src_in: 0.0, src_out: 2.0 }, Clip { media: 1, src_in: 0.0, src_out: 1.0 }]);
@@ -367,7 +407,18 @@ mod tests {
         let m = vec![tools.probe(&clip).unwrap()];
         let t = Timeline::new(vec![Clip { media: 0, src_in: 0.0, src_out: 0.5 }, Clip { media: 0, src_in: 0.5, src_out: 1.0 }]);
         let s = Settings::default();
+        let have = tools.encoders();
+        assert!(have.iter().any(|e| e == "libx264"), "the encoder list couldn't be read");
+        // Some ffmpeg builds leave these out; splice9000 says so instead of
+        // exporting. Anything else missing is a mistake in the preset.
+        const OPTIONAL: [&str; 4] = ["libvpx-vp9", "libopus", "libx265", "libsvtav1"];
         for p in &manifest.exports {
+            let missing: Vec<String> = encoders_needed(&s, Some(p)).into_iter().filter(|e| !have.contains(e)).collect();
+            if !missing.is_empty() {
+                assert!(missing.iter().all(|e| OPTIONAL.contains(&e.as_str())), "{}: no encoder {missing:?}", p.label);
+                eprintln!("{}: skipped, this ffmpeg has no {}", p.label, missing.join(", "));
+                continue;
+            }
             let out = dir.join(format!("{}.{}", p.id, p.extension));
             let fmt = Format::of(&t, &m, &s).with(Some(p));
             let job = Job::start(&tools, args(&t, &m, fmt, &s, Some(p), &out), out.clone(), t.duration(), || {});

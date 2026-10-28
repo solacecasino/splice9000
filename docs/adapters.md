@@ -203,7 +203,7 @@ index, or `null`.
 ## Example exchange
 
 ```
-→ {"method":"initialize","params":{"splice9000":"0.0.4","protocol":1,"permissions":["edit.read"],"ffmpeg":"/opt/homebrew/bin/ffmpeg","ffprobe":"/opt/homebrew/bin/ffprobe"}}
+→ {"method":"initialize","params":{"splice9000":"0.0.5","protocol":1,"permissions":["edit.read"],"ffmpeg":"/opt/homebrew/bin/ffmpeg","ffprobe":"/opt/homebrew/bin/ffprobe"}}
 → {"method":"command","params":{"command":"grab"}}
 ← {"id":1,"method":"edit.get","params":{}}
 → {"id":1,"result":{"playhead":2.5,"clips":[...],"media":[...]}}
@@ -219,5 +219,5 @@ index, or `null`.
 `initialize` says which protocol version splice9000 speaks. New versions
 only add things, so an adapter written for an older version keeps working.
 
-- **1** (splice9000 0.0.4): commands, panels, export formats, the edit,
+- **1** (splice9000 0.0.5): commands, panels, export formats, the edit,
   events and prompts.

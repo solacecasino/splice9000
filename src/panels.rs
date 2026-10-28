@@ -355,6 +355,10 @@ fn export(app: &mut App, ui: &mut Ui) {
     if spec.is_none() && ui.link("Change in settings.toml").clicked() {
         app.queue.push("config".into());
     }
+    let missing = app.missing_encoders(spec.as_ref());
+    if !missing.is_empty() {
+        ui.colored_label(ui.visuals().error_fg_color, format!("Needs ffmpeg's {} encoder, which yours doesn't have.", missing.join(" and ")));
+    }
     ui.add_space(6.0);
     if let Some(job) = &app.export {
         let done = job.progress.lock().unwrap_or_else(|e| e.into_inner()).done;
@@ -366,7 +370,7 @@ fn export(app: &mut App, ui: &mut Ui) {
             app.cancel_export();
         }
     } else {
-        let can = !app.timeline.is_empty() && app.tools.is_some();
+        let can = !app.timeline.is_empty() && app.tools.is_some() && missing.is_empty();
         let button = egui::Button::new(RichText::new("Export Video…").color(app.palette.on_accent)).fill(app.palette.accent).min_size(vec2(140.0, 28.0));
         if ui.add_enabled(can, button).clicked() {
             app.queue.push("export".into());

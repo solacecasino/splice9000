@@ -51,6 +51,13 @@ impl Tools {
         Some(Self { ffmpeg, ffprobe })
     }
 
+    /// The encoders this ffmpeg was built with, such as "libx264". Builds
+    /// differ: some leave out libvpx, libopus or libx265.
+    pub fn encoders(&self) -> Vec<String> {
+        let out = quiet(Command::new(&self.ffmpeg)).args(["-hide_banner", "-encoders"]).output();
+        out.map(|o| parse_encoders(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
+    }
+
     pub fn probe(&self, path: &Path) -> Result<Media, String> {
         let out = quiet(Command::new(&self.ffprobe))
             .args(["-v", "error", "-of", "json", "-show_entries"])
@@ -85,6 +92,17 @@ fn parse_probe(path: &Path, json: &[u8]) -> Result<Media, String> {
         fps,
         audio,
     })
+}
+
+/// The names in `ffmpeg -encoders`: the second word of each line after
+/// the "------" that ends its legend.
+fn parse_encoders(text: &str) -> Vec<String> {
+    text.lines()
+        .skip_while(|l| !l.trim_start().starts_with("---"))
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .map(String::from)
+        .collect()
 }
 
 /// "30000/1001" -> 29.97. Still images report 0/0 or silly rates.
@@ -139,6 +157,12 @@ mod tests {
         assert!((m.fps - 29.97).abs() < 0.01);
         assert_eq!(m.name(), "b.mp4");
         assert!(parse_probe(Path::new("x"), br#"{"streams":[{"codec_type":"audio"}],"format":{"duration":"3"}}"#).is_err());
+    }
+
+    #[test]
+    fn reads_the_encoder_list() {
+        let text = "Encoders:\n V..... = Video\n ------\n V....D libx264              H.264\n A....D aac                  AAC\n";
+        assert_eq!(parse_encoders(text), ["libx264", "aac"]);
     }
 
     #[test]

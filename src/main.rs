@@ -131,6 +131,8 @@ pub struct App {
     note: Option<(String, f64)>,
     /// The edit changed since adapters were last told.
     emit_changed: bool,
+    /// The encoders this ffmpeg has, read the first time they matter.
+    encoders: Option<Vec<String>>,
     title: String,
     ctx: egui::Context,
 }
@@ -302,6 +304,7 @@ impl App {
             export_choice: None,
             note: None,
             emit_changed: false,
+            encoders: None,
             title: String::new(),
             ctx: ctx.clone(),
         };
@@ -347,6 +350,7 @@ impl App {
             let ctx = self.ctx.clone();
             self.preview = Preview::new(self.tools.clone(), self.settings.preview.hwaccel, move || ctx.request_repaint());
             self.requested = None;
+            self.encoders = None;
             // Adapters get the same ffmpeg.
             self.adapters.env.ffmpeg = self.tools.as_ref().map(|t| t.ffmpeg.clone());
             self.adapters.env.ffprobe = self.tools.as_ref().map(|t| t.ffprobe.clone());
@@ -845,6 +849,12 @@ impl App {
             },
             None => None,
         };
+        let missing = self.missing_encoders(spec.as_ref());
+        if !missing.is_empty() {
+            let what = spec.as_ref().map_or("This format".to_owned(), |s| s.label.clone());
+            self.say(format!("{what} needs ffmpeg's {} encoder, which your ffmpeg doesn't have.", missing.join(" and ")));
+            return;
+        }
         let name = self.file.as_ref().and_then(|f| f.file_stem()).map_or("edit".into(), |s| s.to_string_lossy().into_owned());
         let dialog = match &spec {
             Some(s) => rfd::FileDialog::new().add_filter(&s.label, &[s.extension.as_str()]).set_file_name(format!("{name}.{}", s.extension)),
@@ -859,6 +869,16 @@ impl App {
         let ctx = self.ctx.clone();
         self.last_export = None;
         self.export = Some(Job::start(&tools, args, out, self.timeline.duration(), move || ctx.request_repaint()));
+    }
+
+    /// The encoders a format needs that this ffmpeg doesn't have.
+    pub fn missing_encoders(&mut self, preset: Option<&adapters::ExportSpec>) -> Vec<String> {
+        let Some(tools) = &self.tools else { return Vec::new() };
+        let have = self.encoders.get_or_insert_with(|| tools.encoders());
+        if have.is_empty() {
+            return Vec::new(); // couldn't tell; let ffmpeg say
+        }
+        export::encoders_needed(&self.settings.export, preset).into_iter().filter(|e| !have.contains(e)).collect()
     }
 
     pub fn cancel_export(&self) {
