@@ -250,7 +250,7 @@ cuts without fades.
 ## Example exchange
 
 ```
-→ {"method":"initialize","params":{"splice9000":"0.0.7","protocol":3,"permissions":["edit.read"],"ffmpeg":"/opt/homebrew/bin/ffmpeg","ffprobe":"/opt/homebrew/bin/ffprobe"}}
+→ {"method":"initialize","params":{"splice9000":"0.0.8","protocol":3,"permissions":["edit.read"],"ffmpeg":"/opt/homebrew/bin/ffmpeg","ffprobe":"/opt/homebrew/bin/ffprobe"}}
 → {"method":"command","params":{"command":"grab"}}
 ← {"id":1,"method":"edit.get","params":{}}
 → {"id":1,"result":{"playhead":2.5,"clips":[...],"media":[...]}}
@@ -270,7 +270,7 @@ only add things, so an adapter written for an older version keeps working.
   events and prompts.
 - **2** (splice9000 0.0.6): `audio_filter` on export formats, and
   `requires` in adapter.toml.
-- **3** (splice9000 0.0.7): `playback.set`, `media.waveform`,
+- **3** (splice9000 0.0.8; 0.0.7 was tagged but not released): `playback.set`, `media.waveform`,
   `media.thumbnails`, the `media` event, `fade` and `rate` in the edit, and
   `[snapping]` in adapter.toml. Adapters using them should say
   `requires = "0.0.7"`.
