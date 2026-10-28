@@ -301,7 +301,8 @@ impl Worker {
         let hold_b = if b.b_wait > 1e-6 { format!(",tpad=start_mode=clone:start_duration={:.6}", b.b_wait) } else { String::new() };
         let skip = (t - seg.src_in).max(0.0);
         cmd.arg("-filter_complex").arg(format!(
-            "[0:v:0]{fit}{hold_a}[x];[1:v:0]{fit}{hold_b}[y];[x][y]xfade=transition=fade:duration={len:.6}:offset=0,trim=start={skip:.6},setpts=PTS-STARTPTS[v]"
+            "[0:v:0]{fit}{hold_a}[x];[1:v:0]{fit}{hold_b},{fade}[y];[x][y]overlay=format=auto:shortest=1,trim=start={skip:.6}:end={len:.6},setpts=PTS-STARTPTS[v]",
+            fade = crate::export::fade_in(len)
         ));
         cmd.args(["-map", "[v]"]);
     }

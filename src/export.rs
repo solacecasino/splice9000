@@ -116,8 +116,8 @@ pub fn args(timeline: &Timeline, media: &[Media], fmt: Format, s: &Settings, pre
             let hold_a = if len - x.a_has > 1e-6 { format!(",tpad=stop_mode=clone:stop_duration={:.6}", len - x.a_has) } else { String::new() };
             let hold_b = if x.b_wait > 1e-6 { format!(",tpad=start_mode=clone:start_duration={:.6}", x.b_wait) } else { String::new() };
             graph.push(format!("[{n}:v:0]{}{hold_a}[x{k}]", picture(m, fmt, true)));
-            graph.push(format!("[{}:v:0]{}{hold_b}[y{k}]", n + 1, picture(b, fmt, true)));
-            graph.push(format!("[x{k}][y{k}]xfade=transition=fade:duration={len:.6}:offset=0,setsar=1[v{k}]"));
+            graph.push(format!("[{}:v:0]{}{hold_b},{}[y{k}]", n + 1, picture(b, fmt, true), fade_in(len)));
+            graph.push(format!("[x{k}][y{k}]overlay=format=auto:shortest=1,trim=duration={len:.6},format=yuv420p,setsar=1[v{k}]"));
             joined.push_str(&format!("[v{k}]"));
         }
         if audio {
@@ -189,6 +189,14 @@ pub fn picture(m: &Media, fmt: Format, mixed: bool) -> String {
         v.push("format=yuv420p".into());
     }
     v.join(",")
+}
+
+/// The incoming side of a crossfade: see-through at first, solid after
+/// `len`, to lay over the outgoing side. (`xfade` would do, but in ffmpeg
+/// 4.4, still common on Linux, it never finishes when both sides end
+/// together, as they do here.)
+pub fn fade_in(len: f64) -> String {
+    format!("format=yuva420p,fade=t=in:st=0:d={len:.6}:alpha=1")
 }
 
 /// Input `n`'s sound as `len` seconds of 48 kHz stereo, after `wait`
@@ -295,6 +303,22 @@ fn run(ffmpeg: &Path, args: &[String], p: &Mutex<Progress>, cancel: &AtomicBool,
 mod tests {
     use super::*;
     use crate::timeline::Clip;
+
+    /// Waits for an export, failing (rather than hanging the test run) if
+    /// ffmpeg takes over two minutes.
+    fn finish(job: &Job) -> Result<String, String> {
+        let deadline = Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            if let Some(r) = job.progress.lock().unwrap().finished.take() {
+                return r;
+            }
+            if Instant::now() > deadline {
+                job.cancel();
+                panic!("ffmpeg didn't finish exporting {} in two minutes", job.out.display());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
 
     fn media(w: u32, h: u32, fps: f64, audio: bool) -> Media {
         Media { path: format!("/m/{w}.mp4").into(), duration: 60.0, width: w, height: h, fps, audio }
@@ -422,12 +446,7 @@ mod tests {
         let s = Settings { preset: "ultrafast".into(), ..Settings::default() };
         let out = dir.join("out.mp4");
         let job = Job::start(&tools, args(&t, &m, Format::of(&t, &m, &s), &s, None, &out), out.clone(), t.duration(), || {});
-        let result = loop {
-            if let Some(r) = job.progress.lock().unwrap().finished.take() {
-                break r;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        };
+        let result = finish(&job);
         result.unwrap();
         let got = tools.probe(&out).unwrap();
         assert_eq!((got.width, got.height, got.audio), (640, 360, true));
@@ -443,12 +462,7 @@ mod tests {
         let t = Timeline::new(clips);
         let out = dir.join("faded.mp4");
         let job = Job::start(&tools, args(&t, &m, Format::of(&t, &m, &s), &s, None, &out), out.clone(), t.duration(), || {});
-        let result = loop {
-            if let Some(r) = job.progress.lock().unwrap().finished.take() {
-                break r;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        };
+        let result = finish(&job);
         result.unwrap();
         let got = tools.probe(&out).unwrap();
         assert_eq!((got.width, got.height, got.audio), (640, 360, true));
