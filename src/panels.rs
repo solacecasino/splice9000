@@ -440,8 +440,15 @@ pub fn mark(p: &egui::Painter, left_center: Pos2, w: f32, pal: &crate::theme::Pa
 fn adapters_panel(app: &mut App, ui: &mut Ui) {
     let pal = app.palette;
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        // The way to more: the catalog, in the browser.
+        let browse = egui::Button::new(RichText::new("Browse the adapter catalog").color(pal.on_accent)).fill(pal.accent);
+        if ui.add(browse).on_hover_text("Opens in your browser. Download a zip, then drop it on this window.").clicked() {
+            app.queue.push("catalog".into());
+        }
+        ui.label(RichText::new("Download a zip, then drop it on this window.").small().color(pal.weak));
+        ui.add_space(8.0);
         if app.adapters.all.is_empty() {
-            ui.weak("No adapters. Find some in the catalog, then drop a zip on the window.");
+            ui.weak("No adapters yet.");
         }
         let mut toggles = Vec::new();
         for (i, a) in app.adapters.all.iter().enumerate() {

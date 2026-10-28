@@ -123,6 +123,10 @@ pub fn args(timeline: &Timeline, media: &[Media], fmt: Format, s: &Settings, pre
     if video && !filter.is_empty() {
         graph.push(format!("[v]{filter}[vf]"));
     }
+    let sound_filter = preset.map_or("", |p| p.audio_filter.trim());
+    if audio && !sound_filter.is_empty() {
+        graph.push(format!("[a]{sound_filter}[af]"));
+    }
     a.extend(["-filter_complex".into(), graph.join(";")]);
     if video {
         a.extend(["-map".into(), if filter.is_empty() { "[v]" } else { "[vf]" }.into()]);
@@ -141,7 +145,7 @@ pub fn args(timeline: &Timeline, media: &[Media], fmt: Format, s: &Settings, pre
         }
     }
     if audio {
-        a.extend(["-map".into(), "[a]".into()]);
+        a.extend(["-map".into(), if sound_filter.is_empty() { "[a]" } else { "[af]" }.into()]);
         match preset.and_then(|p| p.audio.as_ref()) {
             Some(x) => a.extend(x.iter().cloned()),
             None => a.extend(["-c:a".into(), s.audio_codec.clone(), "-b:a".into(), s.audio_bitrate.clone()]),
@@ -324,10 +328,18 @@ mod tests {
         assert!(a.windows(2).any(|w| w == ["-map", "[vf]"]) && a.windows(2).any(|w| w == ["-loop", "0"]));
         assert!(!a.iter().any(|x| x == "-c:a" || x == "[a]" || x == "-movflags" || x == "libx264"));
 
-        let sound = ExportSpec { id: "m4a".into(), label: "Sound".into(), extension: "m4a".into(), no_video: true, ..ExportSpec::default() };
+        let sound = ExportSpec {
+            id: "m4a".into(),
+            label: "Sound".into(),
+            extension: "m4a".into(),
+            no_video: true,
+            audio_filter: "loudnorm=I=-16".into(),
+            ..ExportSpec::default()
+        };
         let a = args(&t, &m, base, &s, Some(&sound), Path::new("/o.m4a"));
         let graph = &a[a.iter().position(|x| x == "-filter_complex").unwrap() + 1];
-        assert!(graph.ends_with("[a0][a1]concat=n=2:v=0:a=1[a]"), "{graph}");
+        assert!(graph.ends_with("[a0][a1]concat=n=2:v=0:a=1[a];[a]loudnorm=I=-16[af]"), "{graph}");
+        assert!(a.windows(2).any(|w| w == ["-map", "[af]"]));
         assert!(!graph.contains(":v:0") && !a.iter().any(|x| x == "-c:v" || x == "[v]"));
         assert!(a.iter().any(|x| x == "-movflags"));
     }

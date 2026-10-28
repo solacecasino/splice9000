@@ -634,6 +634,10 @@ impl App {
         if tui.add(egui::Button::new(RichText::new("Import").size(12.0))).on_hover_text("Add media files").clicked() {
             self.queue.push("import".into());
         }
+        let shown = self.layout.contains("adapters");
+        if tui.add(egui::Button::selectable(shown, RichText::new("Adapters").size(12.0))).on_hover_text("Your adapters, and the catalog to find more").clicked() {
+            self.queue.push("panel adapters".into());
+        }
         let layout = egui::Button::selectable(self.layout_ui.editing, RichText::new("Layout").size(12.0));
         if tui.add(layout).on_hover_text("Move, add and remove panels (or drag any panel's header)").clicked() {
             self.queue.push("layout edit".into());

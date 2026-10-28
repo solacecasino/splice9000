@@ -16,7 +16,9 @@ An adapter can add:
 ## Finding and installing
 
 Adapters are listed in the
-[catalog](https://github.com/solacecasino/splice9000-adapters/blob/main/CATALOG.md).
+[catalog](https://github.com/solacecasino/splice9000-adapters/blob/main/CATALOG.md):
+**Adapters** at the top right of the window, then **Browse the adapter
+catalog**.
 Download the zip for your computer and **drop it on splice9000's window**
 (or **Adapters → Install Adapter…**). splice9000 shows what it adds and what
 it may do, and installs it only when you click **Install**: Return does
@@ -50,7 +52,9 @@ Removing an installed adapter moves its folder to the Trash.
 ## Making one
 
 The [template](https://github.com/solacecasino/splice9000-adapters/tree/main/template)
-is a working Python adapter, with
+is a working Python adapter (or use
+[`splice.rs`](https://github.com/solacecasino/splice9000-adapters/blob/main/sdk/rust/splice.rs)
+for Rust, which needs nothing installed to run), with
 [`splice.py`](https://github.com/solacecasino/splice9000-adapters/blob/main/sdk/python/splice.py),
 a one-file helper that handles the messages below:
 
@@ -80,6 +84,7 @@ author = "you"
 license = "MIT"
 description = "One sentence about what it does."
 homepage = "https://github.com/you/scene-split"
+requires = "0.0.6"              # optional: the oldest splice9000 it works with
 
 run = ["python3", "main.py"]    # program + arguments, run from this folder
 permissions = ["edit.read", "edit.change"]
@@ -106,6 +111,7 @@ fps = 0
 video = ["-loop", "0"]          # ffmpeg encoder arguments, in place of settings.toml's
 audio = ["-c:a", "aac"]         # the same for sound
 video_filter = "fps=15,split[a][b];[a]palettegen[p];[b][p]paletteuse"
+# audio_filter = "loudnorm=I=-14"  # the same for the sound (protocol 2)
 no_audio = true                 # leave the sound out; `no_video` leaves the picture out
 ```
 
@@ -125,7 +131,10 @@ no_audio = true                 # leave the sound out; `no_video` leaves the pic
 - Panels go in layout.toml as `panel = "adapter:<name>/<panel id>"`, or
   with the panel buttons in the Adapters panel.
 - Unknown keys are ignored, so newer adapter.toml files work in older
-  splice9000s as far as they can.
+  splice9000s as far as they can. When that isn't far enough (an
+  `audio_filter` an older splice9000 would quietly leave out), set
+  `requires`: a splice9000 older than that refuses the adapter and says
+  which version it needs.
 
 ### Permissions
 
@@ -151,7 +160,7 @@ adapters send requests.
 
 | Method | Params | When |
 |---|---|---|
-| `initialize` | `splice9000` (version), `protocol` (`1`), `permissions`, `ffmpeg`, `ffprobe` (paths, or null) | Right after starting |
+| `initialize` | `splice9000` (version), `protocol` (`2`), `permissions`, `ffmpeg`, `ffprobe` (paths, or null) | Right after starting |
 | `command` | `command`: the command's `id` | One of its commands was chosen |
 | `event` | `kind` plus fields below | Something happened, if listed in `events` (needs `edit.read`) |
 | `shutdown` | | splice9000 is quitting or the adapter is being removed; exit soon |
@@ -203,7 +212,7 @@ index, or `null`.
 ## Example exchange
 
 ```
-→ {"method":"initialize","params":{"splice9000":"0.0.5","protocol":1,"permissions":["edit.read"],"ffmpeg":"/opt/homebrew/bin/ffmpeg","ffprobe":"/opt/homebrew/bin/ffprobe"}}
+→ {"method":"initialize","params":{"splice9000":"0.0.6","protocol":2,"permissions":["edit.read"],"ffmpeg":"/opt/homebrew/bin/ffmpeg","ffprobe":"/opt/homebrew/bin/ffprobe"}}
 → {"method":"command","params":{"command":"grab"}}
 ← {"id":1,"method":"edit.get","params":{}}
 → {"id":1,"result":{"playhead":2.5,"clips":[...],"media":[...]}}
@@ -221,3 +230,5 @@ only add things, so an adapter written for an older version keeps working.
 
 - **1** (splice9000 0.0.5): commands, panels, export formats, the edit,
   events and prompts.
+- **2** (splice9000 0.0.6): `audio_filter` on export formats, and
+  `requires` in adapter.toml.

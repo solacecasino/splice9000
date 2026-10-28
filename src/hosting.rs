@@ -13,12 +13,12 @@ use crate::{App, log, menu};
 
 /// The adapter catalog, opened in the browser. splice9000 itself never goes
 /// online.
-pub const CATALOG: &str = "https://github.com/solacecasino/splice9000-adapters#readme";
+pub const CATALOG: &str = "https://github.com/solacecasino/splice9000-adapters/blob/main/CATALOG.md";
 
 /// A question on screen, waiting for the user.
 pub enum Prompt {
     /// A dropped adapter package: install it?
-    Install { path: PathBuf, manifest: Manifest },
+    Install { path: PathBuf, manifest: Box<Manifest> },
     /// An installed adapter's first run: allow it? Then run `then`.
     Allow { adapter: String, then: Option<String> },
     /// `ui.confirm` from an adapter.
@@ -154,7 +154,7 @@ impl App {
     /// Offers to install a dropped or picked package.
     pub fn offer_install(&mut self, path: PathBuf) {
         match adapters::package_manifest(&path) {
-            Ok(manifest) => self.ask(Prompt::Install { path, manifest }),
+            Ok(manifest) => self.ask(Prompt::Install { path, manifest: Box::new(manifest) }),
             Err(e) => self.say(format!("{}: {e}", path.display())),
         }
     }

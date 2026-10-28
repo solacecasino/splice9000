@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// The protocol version sent in `initialize`. New versions only add things.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 pub const EDIT_READ: &str = "edit.read";
 pub const EDIT_CHANGE: &str = "edit.change";
@@ -46,6 +46,9 @@ pub struct Manifest {
     pub description: String,
     #[serde(default)]
     pub homepage: String,
+    /// The oldest splice9000 it works with, such as "0.0.6" (protocol 2).
+    #[serde(default)]
+    pub requires: String,
     /// The program and its arguments, run from the adapter's folder. Empty
     /// for an adapter that only adds export formats.
     #[serde(default)]
@@ -119,6 +122,10 @@ pub struct ExportSpec {
     /// An ffmpeg filter run on the finished picture, such as a GIF palette.
     #[serde(default)]
     pub video_filter: String,
+    /// An ffmpeg filter run on the finished sound, such as `loudnorm`
+    /// (protocol 2).
+    #[serde(default)]
+    pub audio_filter: String,
     /// Leave the picture out (sound-only formats).
     #[serde(default)]
     pub no_video: bool,
@@ -661,10 +668,24 @@ fn discover_in(root: &Path) -> Vec<Adapter> {
     found
 }
 
+/// Whether this splice9000 is at least `version` ("0.0.6").
+fn new_enough(version: &str) -> bool {
+    let parts = |v: &str| v.trim().trim_start_matches('v').split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    parts(env!("CARGO_PKG_VERSION")) >= parts(version)
+}
+
 fn parse_manifest(text: &str, at: &str) -> Result<Manifest, String> {
     let manifest: Manifest = toml::from_str(text).map_err(|e| format!("{at}: {}", e.message()))?;
     if manifest.name.trim().is_empty() {
         return Err(format!("{at}: `name` is empty"));
+    }
+    if !manifest.requires.is_empty() && !new_enough(&manifest.requires) {
+        return Err(format!(
+            "{} needs splice9000 {} or newer (this is {}). Get the latest from github.com/solacecasino/splice9000/releases.",
+            manifest.name,
+            manifest.requires,
+            env!("CARGO_PKG_VERSION")
+        ));
     }
     if manifest.run.is_empty() && manifest.exports.is_empty() {
         return Err(format!("{at}: needs a program to `run` or `[[exports]]`"));
@@ -1065,6 +1086,14 @@ done
         zip.finish().unwrap();
         assert!(install_into(&zip_path, &root.join("adapters")).is_err());
         assert!(!root.join("outside.txt").exists() && !root.parent().unwrap().join("outside.txt").exists());
+    }
+
+    #[test]
+    fn adapters_can_ask_for_a_newer_splice9000() {
+        assert!(new_enough("0.0.1") && new_enough(env!("CARGO_PKG_VERSION")));
+        assert!(!new_enough("99.0.0") && !new_enough("0.0.999"));
+        let e = parse_manifest("name = \"X\"\nrequires = \"99.0\"\n[[exports]]\nid = \"e\"\nlabel = \"E\"\nextension = \"mp4\"", "a").unwrap_err();
+        assert!(e.contains("needs splice9000 99.0 or newer"), "{e}");
     }
 
     #[test]

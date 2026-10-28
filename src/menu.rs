@@ -16,7 +16,7 @@ pub const MENUS: &[(&str, &[&str])] = &[
     ("View", &["panels", "-", "layout edit", "layout reset", "-", "zoom in", "zoom out", "zoom fit"]),
     ("Playback", &["play", "mute", "-", "start", "end", "-", "frame previous", "frame next", "cut previous", "cut next"]),
     ("Adapters", &["panel adapters", "install adapter", "catalog"]),
-    ("Help", &["panel help", "panel log", "-", "config"]),
+    ("Help", &["panel help", "panel log", "-", "catalog", "config"]),
 ];
 
 /// The menu text for a command.

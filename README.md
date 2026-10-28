@@ -77,8 +77,12 @@ The layout is saved to `layout.toml`, which can also be edited by hand.
 splice9000 has only what you need, and adapters add the rest. An adapter can
 add commands, panels and export formats.
 
-- **Find one** in the [adapter catalog](https://github.com/solacecasino/splice9000-adapters/blob/main/CATALOG.md),
-  download the zip for your computer, and **drop it on the window**.
+- **Find one** in the [adapter catalog](https://github.com/solacecasino/splice9000-adapters/blob/main/CATALOG.md)
+  (**Adapters** at the top right of the window, then **Browse the adapter
+  catalog**), download the zip for your computer, and **drop it on the
+  window**. There you'll find Silence Cut (jump cuts for talking video),
+  Loudness Normalize (exports leveled for YouTube, Spotify, podcasts and
+  broadcast) and Scene Split.
   splice9000 shows what it adds and what it may do, and installs it when you
   click **Install**. splice9000 itself never goes online.
 - **Two come built in:** Export Presets (YouTube, vertical, square, GIF,
