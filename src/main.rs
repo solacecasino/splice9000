@@ -8,8 +8,10 @@
 //! hand results back through channels and mailboxes, waking the interface
 //! only when there's something new to show.
 
+mod adapters;
 mod audio;
 mod export;
+mod hosting;
 mod keys;
 mod layout;
 mod log;
@@ -23,6 +25,7 @@ mod theme;
 mod timeline;
 mod watch;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -114,6 +117,20 @@ pub struct App {
     last_export: Option<Result<String, String>>,
     /// Commands from buttons, run at the start of the next frame.
     queue: Vec<String>,
+    adapters: adapters::Host,
+    adapter_rx: Receiver<adapters::Message>,
+    /// What adapters put in their panels, by panel kind.
+    adapter_panels: HashMap<String, Vec<serde_json::Value>>,
+    /// The question on screen, and the ones waiting behind it.
+    prompt: Option<hosting::Prompt>,
+    prompts: Vec<hosting::Prompt>,
+    /// The export format picked in the Export panel (adapter, id); None:
+    /// settings.toml's.
+    export_choice: Option<(String, String)>,
+    /// A short message at the bottom, until the time given.
+    note: Option<(String, f64)>,
+    /// The edit changed since adapters were last told.
+    emit_changed: bool,
     title: String,
     ctx: egui::Context,
 }
@@ -234,12 +251,21 @@ impl App {
         }
         #[cfg(target_os = "macos")]
         set_dock_icon();
+        let (tx, adapter_rx) = channel();
+        let adapters = {
+            let (tx, ctx) = (std::sync::Mutex::new(tx), ctx.clone());
+            let env = adapters::Env { config: dir.clone(), builtin: adapters::builtin_dir(), ffmpeg: None, ffprobe: None };
+            adapters::Host::new(env, move |m| {
+                let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(m);
+                ctx.request_repaint();
+            })
+        };
         let mut app = Self {
-            menu: menu::MenuBar::install(&Keymap::load("").0, ctx, None),
+            menu: menu::MenuBar::install(&Keymap::load("", &[]).0, ctx, None, &menu::Extras::default()),
             palette: theme::Palette::new(&settings::Look::default()),
             dir,
             settings: Settings::default(),
-            keymap: Keymap::load("").0,
+            keymap: Keymap::load("", &[]).0,
             layout: layout::default_layout(),
             layout_ui: LayoutUi::default(),
             config_changed,
@@ -268,18 +294,27 @@ impl App {
             export: None,
             last_export: None,
             queue: Vec::new(),
+            adapters,
+            adapter_rx,
+            adapter_panels: HashMap::new(),
+            prompt: None,
+            prompts: Vec::new(),
+            export_choice: None,
+            note: None,
+            emit_changed: false,
             title: String::new(),
             ctx: ctx.clone(),
         };
         app.load_config(true);
-        // The menus show the user's own keys.
-        app.menu = menu::MenuBar::install(&app.keymap, ctx, icon_rgba());
-        if let Ok(text) = std::fs::read_to_string(app.dir.join("session.json"))
-            && let Ok(p) = serde_json::from_str::<Project>(&text)
-        {
+        app.adapters.start_launch_adapters();
+        let session = std::fs::read_to_string(app.dir.join("session.json")).ok().and_then(|t| serde_json::from_str::<Project>(&t).ok());
+        if let Some(p) = session {
             app.file = p.file.clone();
             app.set_project(p);
         }
+        // Files named on the command line (Open With on Windows and Linux).
+        let named: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).filter(|p| p.exists()).collect();
+        app.open_paths(named);
         app
     }
 
@@ -294,9 +329,6 @@ impl App {
                 Settings::default()
             }
         };
-        let (keymap, problems) = Keymap::load(&read("keys.toml"));
-        problems.into_iter().for_each(log::error);
-        self.keymap = keymap;
         match layout::from_toml(&read("layout.toml")) {
             Ok(root) => self.layout = root,
             Err(e) => log::error(format!("layout.toml: {e} (keeping the current layout)")),
@@ -315,7 +347,12 @@ impl App {
             let ctx = self.ctx.clone();
             self.preview = Preview::new(self.tools.clone(), self.settings.preview.hwaccel, move || ctx.request_repaint());
             self.requested = None;
+            // Adapters get the same ffmpeg.
+            self.adapters.env.ffmpeg = self.tools.as_ref().map(|t| t.ffmpeg.clone());
+            self.adapters.env.ffprobe = self.tools.as_ref().map(|t| t.ffprobe.clone());
         }
+        // Keys (the user's and adapters') and the menus that show them.
+        self.refresh_commands();
         self.ctx.request_repaint();
     }
 
@@ -384,6 +421,7 @@ impl App {
     pub fn edited(&mut self) {
         self.dirty = true;
         self.session_dirty = true;
+        self.emit_changed = true;
     }
 
     pub fn seek(&mut self, t: f64) {
@@ -393,6 +431,9 @@ impl App {
     }
 
     pub fn run(&mut self, command: &str) {
+        if self.run_adapter_command(command) {
+            return;
+        }
         let frame = self.frame();
         match command {
             "play" => {
@@ -467,7 +508,7 @@ impl App {
                     self.import(paths, false);
                 }
             }
-            "export" => self.start_export(),
+            "export" => self.start_export(self.export_choice.clone()),
             "new" => {
                 self.snapshot();
                 let undo = std::mem::take(&mut self.undo);
@@ -497,6 +538,7 @@ impl App {
                     let text = serde_json::to_string_pretty(&self.project()).unwrap_or_default();
                     match write_atomic(&path, &text) {
                         Ok(()) => {
+                            self.adapters.emit("saved", serde_json::json!({ "path": path }));
                             self.file = Some(path);
                             self.dirty = false;
                             self.session_dirty = true;
@@ -562,7 +604,8 @@ impl App {
             let menus = egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(rect.left() + 360.0, rect.bottom()));
             let mut mui = ui.new_child(egui::UiBuilder::new().max_rect(menus));
             let layout = &self.layout;
-            menu::draw(&mut mui, &self.keymap, &|k| layout.contains(k), &mut self.queue);
+            let extras = self.menu_extras();
+            menu::draw(&mut mui, &self.keymap, &extras, &|k| layout.contains(k), &mut self.queue);
             x = menus.right() + 8.0;
         }
         let cy = rect.center().y;
@@ -779,7 +822,8 @@ impl App {
         }
     }
 
-    fn start_export(&mut self) {
+    /// Exports the edit, in settings.toml's format or an adapter's `preset`.
+    fn start_export(&mut self, preset: Option<(String, String)>) {
         if self.export.is_some() {
             return;
         }
@@ -791,12 +835,27 @@ impl App {
             log::error("Nothing to export yet: add a clip to the timeline first.");
             return;
         }
+        let spec = match &preset {
+            Some((a, id)) => match self.adapters.export(a, id) {
+                Some(s) => Some(s.clone()),
+                None => {
+                    log::error(format!("No export format \"{id}\" in {a}"));
+                    return;
+                }
+            },
+            None => None,
+        };
         let name = self.file.as_ref().and_then(|f| f.file_stem()).map_or("edit".into(), |s| s.to_string_lossy().into_owned());
-        let Some(out) = rfd::FileDialog::new().add_filter("Video", &["mp4", "mov", "mkv", "webm"]).set_file_name(format!("{name}.mp4")).save_file() else {
+        let dialog = match &spec {
+            Some(s) => rfd::FileDialog::new().add_filter(&s.label, &[s.extension.as_str()]).set_file_name(format!("{name}.{}", s.extension)),
+            None => rfd::FileDialog::new().add_filter("Video", &["mp4", "mov", "mkv", "webm"]).set_file_name(format!("{name}.mp4")),
+        };
+        let Some(out) = dialog.save_file() else {
             return;
         };
         self.stop();
-        let args = export::args(&self.timeline, &self.media, self.format(), &self.settings.export, &out);
+        let fmt = self.format().with(spec.as_ref());
+        let args = export::args(&self.timeline, &self.media, fmt, &self.settings.export, spec.as_ref(), &out);
         let ctx = self.ctx.clone();
         self.last_export = None;
         self.export = Some(Job::start(&tools, args, out, self.timeline.duration(), move || ctx.request_repaint()));
@@ -813,7 +872,10 @@ impl App {
         let finished = job.progress.lock().unwrap_or_else(|e| e.into_inner()).finished.take();
         if let Some(r) = finished {
             match &r {
-                Ok(s) => log::info(format!("Exported {}: {s}", job.out.display())),
+                Ok(s) => {
+                    log::info(format!("Exported {}: {s}", job.out.display()));
+                    self.adapters.emit("exported", serde_json::json!({ "path": job.out }));
+                }
                 Err(e) => log::error(format!("Export failed: {e}")),
             }
             self.last_export = Some(r);
@@ -838,8 +900,20 @@ impl App {
 
     fn dropped_files(&mut self, ctx: &egui::Context) {
         let paths: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+        self.open_paths(paths);
+    }
+
+    /// Opens dropped files, or files named when splice9000 was started:
+    /// adapters are offered for install, a project opens, media is added.
+    fn open_paths(&mut self, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
+        }
+        // Adapters (zips or folders with an adapter.toml) are offered for
+        // install; the rest is projects and media.
+        let (packages, paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| adapters::is_package(p));
+        for p in packages {
+            self.offer_install(p);
         }
         let (projects, media): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| p.extension().is_some_and(|e| e == "splice"));
         if let Some(p) = projects.first()
@@ -873,9 +947,13 @@ impl shell::App for App {
             self.load_config(false);
         }
         self.dropped_files(&ctx);
+        self.serve_adapters();
         let mut commands = std::mem::take(&mut self.queue);
         commands.extend(self.menu.take());
-        commands.extend(self.keymap.take(&ctx));
+        // While a question is on screen, keys go to it, not to the edit.
+        if self.prompt.is_none() {
+            commands.extend(self.keymap.take(&ctx));
+        }
         if self.layout_ui.editing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.layout_ui.editing = false;
         }
@@ -901,7 +979,19 @@ impl shell::App for App {
         let palette = self.palette;
         self.preview_area = None;
         let headers = self.settings.look.panel_headers;
-        let out = lui.show(ui, &mut root, rect, &mut layout::Frame { palette: &palette, headers, panel: &mut |kind, part, ui| panels::draw(self, kind, part, ui) });
+        let titles: HashMap<String, String> = self
+            .adapters
+            .all
+            .iter()
+            .flat_map(|a| a.manifest.panels.iter().map(move |p| (format!("adapter:{}/{}", a.manifest.name, p.id), p.title.clone())))
+            .collect();
+        let title = |k: &str| titles.get(k).cloned().unwrap_or_else(|| layout::title(k).to_owned());
+        let out = lui.show(
+            ui,
+            &mut root,
+            rect,
+            &mut layout::Frame { palette: &palette, headers, panel: &mut |kind, part, ui| panels::draw(self, kind, part, ui), title: &title },
+        );
         self.layout = root;
         self.layout_ui = lui;
         if out.changed {
@@ -912,6 +1002,12 @@ impl shell::App for App {
         }
         let layout = &self.layout;
         self.menu.sync(&|k| layout.contains(k));
+        self.show_prompt(&ctx);
+        panels::note(ui, rect, self);
+        if std::mem::take(&mut self.emit_changed) {
+            let summary = serde_json::json!({ "duration": self.timeline.duration(), "clips": self.timeline.len() });
+            self.adapters.emit("changed", summary);
+        }
 
         // The preview is decoded at the size it's shown, within limits.
         let ppp = ctx.pixels_per_point();
@@ -930,6 +1026,7 @@ impl shell::App for App {
         if ctx.input(|i| i.viewport().close_requested()) {
             self.stop();
             self.save_session();
+            self.adapters.stop_all();
         }
     }
 }

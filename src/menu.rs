@@ -7,12 +7,15 @@
 use crate::keys::Keymap;
 use crate::layout::PANELS;
 
-/// Each menu's commands; "-" is a separator, "panels" the panel toggles.
+/// Each menu's commands; "-" is a separator, "panels" the panel toggles,
+/// "export as" the export formats adapters add. Adapters' commands go at
+/// the end of the menu they ask for, or of Adapters.
 pub const MENUS: &[(&str, &[&str])] = &[
-    ("File", &["new", "open", "-", "save", "save as", "-", "import", "export"]),
+    ("File", &["new", "open", "-", "save", "save as", "-", "import", "export", "export as"]),
     ("Edit", &["undo", "redo", "-", "split", "delete", "append"]),
     ("View", &["panels", "-", "layout edit", "layout reset", "-", "zoom in", "zoom out", "zoom fit"]),
     ("Playback", &["play", "mute", "-", "start", "end", "-", "frame previous", "frame next", "cut previous", "cut next"]),
+    ("Adapters", &["panel adapters", "install adapter", "catalog"]),
     ("Help", &["panel help", "panel log", "-", "config"]),
 ];
 
@@ -47,10 +50,33 @@ pub fn label(command: &str) -> String {
         "cut previous" => "Previous Cut",
         "cut next" => "Next Cut",
         "config" => "Open Settings Folder",
+        "install adapter" => "Install Adapter…",
+        "catalog" => "Browse Adapter Catalog…",
         "quit" => "Quit splice9000",
         other => other,
     }
     .to_owned()
+}
+
+/// What adapters add to the menus.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Extras {
+    /// Menu ("file", "edit", "view", "playback"; anything else is Adapters),
+    /// command, label.
+    pub commands: Vec<(String, String, String)>,
+    /// Command, label: the export formats, for File → Export As.
+    pub exports: Vec<(String, String)>,
+}
+
+impl Extras {
+    /// Adapters' commands for the menu titled `title`.
+    fn for_menu<'a>(&'a self, title: &str) -> impl Iterator<Item = &'a (String, String, String)> {
+        let title = title.to_lowercase();
+        let known = ["file", "edit", "view", "playback"];
+        self.commands.iter().filter(move |(m, _, _)| {
+            if title == "adapters" { !known.contains(&m.as_str()) } else { *m == title }
+        })
+    }
 }
 
 /// The panel toggles, in menu order.
@@ -120,7 +146,7 @@ mod native {
     use muda::accelerator::Accelerator;
     use muda::{AboutMetadataBuilder, CheckMenuItem, Icon, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
-    use super::{Keymap, MENUS, accelerator, label, panel_commands};
+    use super::{Extras, Keymap, MENUS, accelerator, label, panel_commands};
 
     pub struct MenuBar {
         _menu: Menu,
@@ -133,14 +159,15 @@ mod native {
     static CHOSEN: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
 
     impl MenuBar {
-        pub fn install(keys: &Keymap, ctx: &egui::Context, icon: Option<(Vec<u8>, u32, u32)>) -> Self {
+        pub fn install(keys: &Keymap, ctx: &egui::Context, icon: Option<(Vec<u8>, u32, u32)>, extras: &Extras) -> Self {
             let mut commands = Vec::new();
             let accel = |c: &str| keys.key_for(c).and_then(|k| accelerator(&k)).and_then(|a| a.parse::<Accelerator>().ok());
-            let item = |commands: &mut Vec<String>, c: &str| {
+            let labeled = |commands: &mut Vec<String>, c: &str, text: &str, enabled: bool| {
                 let id = commands.len().to_string();
                 commands.push(c.to_owned());
-                MenuItem::with_id(id, label(c), true, accel(c))
+                MenuItem::with_id(id, text, enabled, accel(c))
             };
+            let item = |commands: &mut Vec<String>, c: &str| labeled(commands, c, &label(c), true);
             let sep = PredefinedMenuItem::separator;
             let menu = Menu::new();
 
@@ -186,8 +213,22 @@ mod native {
                             }
                             sub.append(&list).expect("menu builds");
                         }
+                        "export as" => {
+                            let list = Submenu::new("Export As", !extras.exports.is_empty());
+                            for (c, text) in &extras.exports {
+                                list.append(&labeled(&mut commands, c, text, true)).expect("menu builds");
+                            }
+                            sub.append(&list).expect("menu builds");
+                        }
                         c => sub.append(&item(&mut commands, c)).expect("menu builds"),
                     }
+                }
+                let mut first = true;
+                for (_, c, text) in extras.for_menu(title) {
+                    if std::mem::take(&mut first) {
+                        sub.append(&sep()).expect("menu builds");
+                    }
+                    sub.append(&labeled(&mut commands, c, text, true)).expect("menu builds");
                 }
                 if *title == "Help" {
                     last = Some(sub);
@@ -247,7 +288,7 @@ pub struct MenuBar;
 
 #[cfg(not(target_os = "macos"))]
 impl MenuBar {
-    pub fn install(_: &Keymap, _: &egui::Context, _: Option<(Vec<u8>, u32, u32)>) -> Self {
+    pub fn install(_: &Keymap, _: &egui::Context, _: Option<(Vec<u8>, u32, u32)>, _: &Extras) -> Self {
         MenuBar
     }
     pub fn take(&self) -> Vec<String> {
@@ -259,7 +300,8 @@ impl MenuBar {
 /// The menus drawn in the window, for systems without a menu bar of their
 /// own. Chosen commands go into `out`.
 #[cfg_attr(target_os = "macos", allow(dead_code))]
-pub fn draw(ui: &mut egui::Ui, keys: &Keymap, shown: &dyn Fn(&str) -> bool, out: &mut Vec<String>) {
+pub fn draw(ui: &mut egui::Ui, keys: &Keymap, extras: &Extras, shown: &dyn Fn(&str) -> bool, out: &mut Vec<String>) {
+    let shortcut = |c: &str| keys.key_for(c).map(|k| shortcut_text(&k)).unwrap_or_default();
     let entries = |ui: &mut egui::Ui, list: &[&str], out: &mut Vec<String>| {
         ui.set_min_width(220.0);
         for c in list {
@@ -277,9 +319,20 @@ pub fn draw(ui: &mut egui::Ui, keys: &Keymap, shown: &dyn Fn(&str) -> bool, out:
                         }
                     });
                 }
+                "export as" => {
+                    ui.add_enabled_ui(!extras.exports.is_empty(), |ui| {
+                        ui.menu_button("Export As", |ui| {
+                            for (c, text) in &extras.exports {
+                                if ui.add(egui::Button::new(text.as_str()).shortcut_text(shortcut(c))).clicked() {
+                                    out.push(c.clone());
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                }
                 c => {
-                    let key = keys.key_for(c).map(|k| shortcut_text(&k)).unwrap_or_default();
-                    if ui.add(egui::Button::new(label(c)).shortcut_text(key)).clicked() {
+                    if ui.add(egui::Button::new(label(c)).shortcut_text(shortcut(c))).clicked() {
                         out.push(c.to_owned());
                         ui.close();
                     }
@@ -291,6 +344,16 @@ pub fn draw(ui: &mut egui::Ui, keys: &Keymap, shown: &dyn Fn(&str) -> bool, out:
         for (title, list) in MENUS {
             ui.menu_button(*title, |ui| {
                 entries(ui, list, out);
+                let mut first = true;
+                for (_, c, text) in extras.for_menu(title) {
+                    if std::mem::take(&mut first) {
+                        ui.separator();
+                    }
+                    if ui.add(egui::Button::new(text.as_str()).shortcut_text(shortcut(c))).clicked() {
+                        out.push(c.clone());
+                        ui.close();
+                    }
+                }
                 if *title == "File" {
                     ui.separator();
                     if ui.button("Exit").clicked() {
@@ -314,7 +377,7 @@ mod tests {
         assert_eq!(accelerator("space"), None);
         // Every menu entry is a real command with a label of its own.
         for (_, list) in MENUS {
-            for c in list.iter().filter(|c| !matches!(**c, "-" | "panels")) {
+            for c in list.iter().filter(|c| !matches!(**c, "-" | "panels" | "export as")) {
                 assert!(crate::keys::COMMANDS.iter().any(|k| k.0 == *c), "{c} isn't a command");
                 assert_ne!(label(c), *c, "{c} has no label");
             }

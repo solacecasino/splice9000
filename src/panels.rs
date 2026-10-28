@@ -39,6 +39,8 @@ pub fn draw(app: &mut App, kind: &str, part: Part, ui: &mut Ui) {
         "export" => export(app, ui),
         "log" => log_panel(ui),
         "help" => help(app, ui),
+        "adapters" => adapters_panel(app, ui),
+        k if k.starts_with("adapter:") => adapter_panel(app, k, ui),
         _ => {}
     }
 }
@@ -52,6 +54,14 @@ fn header(app: &mut App, kind: &str, ui: &mut Ui) {
         "media" => {
             if small(ui, "+ Import", "Add media files").clicked() {
                 app.queue.push("import".into());
+            }
+        }
+        "adapters" => {
+            if small(ui, "Catalog", "Find adapters in the catalog (opens your browser)").clicked() {
+                app.queue.push("catalog".into());
+            }
+            if small(ui, "+ Install", "Install an adapter from its zip (or drop it on the window)").clicked() {
+                app.queue.push("install adapter".into());
             }
         }
         "timeline" => {
@@ -316,11 +326,33 @@ fn edit(app: &mut App, r: &egui::Response, changed: bool, f: impl FnOnce(&mut Ap
 }
 
 fn export(app: &mut App, ui: &mut Ui) {
-    let f = app.format();
+    // The format: settings.toml's, or one an adapter adds.
+    let presets: Vec<(String, String, String)> = app.adapters.exports().map(|(a, e)| (a.to_owned(), e.id.clone(), e.label.clone())).collect();
+    let chosen = app.export_choice.as_ref().and_then(|(a, id)| presets.iter().find(|p| &p.0 == a && &p.1 == id)).map(|p| p.2.clone());
+    let mut choice = app.export_choice.clone();
+    egui::ComboBox::from_id_salt("export format")
+        .selected_text(chosen.unwrap_or_else(|| "Settings".into()))
+        .width(ui.available_width().min(220.0))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut choice, None, "Settings").on_hover_text("The format in settings.toml");
+            for (a, id, label) in &presets {
+                ui.selectable_value(&mut choice, Some((a.clone(), id.clone())), label).on_hover_text(format!("From {a}"));
+            }
+        });
+    app.export_choice = choice;
+    let spec = app.export_choice.as_ref().and_then(|(a, id)| app.adapters.export(a, id)).cloned();
+    let f = app.format().with(spec.as_ref());
     let s = &app.settings.export;
-    let quality = if s.video_codec.starts_with("libx26") { format!(" · CRF {} {}", s.quality, s.preset) } else { String::new() };
-    ui.label(format!("{}×{} · {} fps\n{}{quality}", f.width, f.height, (f.fps * 1000.0).round() / 1000.0, s.video_codec));
-    if ui.link("Change in settings.toml").clicked() {
+    let line = match &spec {
+        Some(p) if p.no_video => format!("Sound only · .{}", p.extension),
+        Some(p) => format!("{}×{} · {} fps · .{}", f.width, f.height, (f.fps * 1000.0).round() / 1000.0, p.extension),
+        None => {
+            let quality = if s.video_codec.starts_with("libx26") { format!(" · CRF {} {}", s.quality, s.preset) } else { String::new() };
+            format!("{}×{} · {} fps\n{}{quality}", f.width, f.height, (f.fps * 1000.0).round() / 1000.0, s.video_codec)
+        }
+    };
+    ui.label(line);
+    if spec.is_none() && ui.link("Change in settings.toml").clicked() {
         app.queue.push("config".into());
     }
     ui.add_space(6.0);
@@ -397,6 +429,151 @@ pub fn mark(p: &egui::Painter, left_center: Pos2, w: f32, pal: &crate::theme::Pa
         pal.accent,
         Stroke::NONE,
     ));
+}
+
+/// Every adapter: what it adds, what it may do, and Remove; then built-in
+/// ones that were removed, with Add Back.
+fn adapters_panel(app: &mut App, ui: &mut Ui) {
+    let pal = app.palette;
+    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        if app.adapters.all.is_empty() {
+            ui.weak("No adapters. Find some in the catalog, then drop a zip on the window.");
+        }
+        let mut toggles = Vec::new();
+        for (i, a) in app.adapters.all.iter().enumerate() {
+            let m = &a.manifest;
+            if i > 0 {
+                ui.separator();
+            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&m.name).strong().color(pal.text));
+                ui.label(RichText::new(&m.version).small().color(pal.weak));
+                if a.builtin {
+                    ui.label(RichText::new("BUILT IN").size(9.5).color(pal.accent));
+                }
+                if a.is_running() {
+                    ui.label(RichText::new("running").size(9.5).color(pal.weak));
+                }
+            });
+            if !m.description.is_empty() {
+                ui.label(RichText::new(&m.description).color(pal.weak));
+            }
+            let can = if m.run.is_empty() {
+                "Presets only: nothing runs".to_owned()
+            } else if m.permissions.is_empty() {
+                "No permissions".to_owned()
+            } else {
+                format!("Can {}", m.permissions.iter().map(|p| crate::adapters::describe(p)).collect::<Vec<_>>().join("; "))
+            };
+            ui.label(RichText::new(can).small().color(pal.weak));
+            if !m.exports.is_empty() {
+                let list: Vec<&str> = m.exports.iter().map(|e| e.label.as_str()).collect();
+                ui.label(RichText::new(format!("Export formats: {}", list.join(", "))).small().color(pal.weak));
+            }
+            ui.horizontal_wrapped(|ui| {
+                for c in &m.commands {
+                    if ui.small_button(&c.label).clicked() {
+                        app.queue.push(crate::adapters::command_name("adapter", &m.name, &c.id));
+                    }
+                }
+                for p in &m.panels {
+                    let kind = format!("adapter:{}/{}", m.name, p.id);
+                    if ui.add(egui::Button::selectable(app.layout.contains(&kind), RichText::new(format!("{} panel", p.title)).small())).clicked() {
+                        toggles.push((m.name.clone(), p.id.clone()));
+                    }
+                }
+                let tip = if a.builtin { "Take it out of splice9000; Add Back brings it again" } else { "Move it to the Trash" };
+                if ui.small_button("Remove").on_hover_text(tip).clicked() {
+                    app.queue.push(format!("adapter-remove \"{}\"", m.name));
+                }
+                if !m.homepage.is_empty() && ui.small_button("Homepage").clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(&m.homepage));
+                }
+            });
+        }
+        for (a, id) in toggles {
+            app.toggle_adapter_panel(&a, &id);
+        }
+        let removed = app.adapters.removed_builtins();
+        if !removed.is_empty() {
+            ui.add_space(10.0);
+            ui.label(RichText::new("REMOVED").size(10.0).color(pal.weak));
+            for m in removed {
+                ui.horizontal(|ui| {
+                    ui.label(&m.name);
+                    if ui.small_button("Add Back").clicked() {
+                        app.queue.push(format!("adapter-add-back \"{}\"", m.name));
+                    }
+                });
+            }
+        }
+        ui.add_space(10.0);
+        if ui.link("Install from a folder instead…").clicked() {
+            app.queue.push("install adapter folder".into());
+        }
+    });
+}
+
+/// A panel an adapter fills with `panel.set`: lines of text, or buttons
+/// that run its commands.
+fn adapter_panel(app: &mut App, kind: &str, ui: &mut Ui) {
+    let Some((name, _)) = crate::layout::adapter_panel(kind) else { return };
+    let Some(i) = app.adapters.index(name) else {
+        ui.weak(format!("{name} isn't installed."));
+        return;
+    };
+    if !app.adapters.all[i].is_running() {
+        if app.adapters.approved(i) {
+            // Started once when its panel shows; after a crash, by hand.
+            let tried = ui.ctx().data_mut(|d| std::mem::replace(d.get_temp_mut_or_default::<bool>(Id::unique(("started", kind))), true));
+            if !tried || ui.button(format!("Start {name}")).clicked() {
+                app.queue.push(format!("adapter-start \"{name}\""));
+            }
+        } else if ui.button(format!("Allow {name}…")).clicked() {
+            app.queue.push(format!("adapter-start \"{name}\""));
+        }
+    }
+    let lines = app.adapter_panels.get(kind).cloned().unwrap_or_default();
+    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        for line in &lines {
+            match line {
+                serde_json::Value::String(t) => {
+                    ui.label(t);
+                }
+                serde_json::Value::Object(o) => {
+                    let text = o.get("text").and_then(|t| t.as_str()).unwrap_or_default();
+                    match o.get("command").and_then(|c| c.as_str()) {
+                        Some(c) => {
+                            if ui.button(text).clicked() {
+                                app.queue.push(crate::adapters::command_name("adapter", name, c));
+                            }
+                        }
+                        None => {
+                            ui.label(text);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+/// The short message adapters and installs leave, at the bottom.
+pub fn note(ui: &Ui, rect: Rect, app: &mut App) {
+    let now = ui.ctx().input(|i| i.time);
+    let Some((text, until)) = &app.note else { return };
+    if now > *until {
+        app.note = None;
+        return;
+    }
+    let pal = app.palette;
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("note")));
+    let galley = painter.layout(text.clone(), FontId::proportional(12.0), pal.text, (rect.width() - 80.0).max(200.0));
+    let r = Rect::from_center_size(pos2(rect.center().x, rect.bottom() - 26.0), galley.size() + vec2(28.0, 14.0));
+    painter.rect_filled(r, 6.0, pal.header);
+    painter.rect_stroke(r, 6.0, Stroke::new(1.0, pal.line), StrokeKind::Inside);
+    painter.galley(r.min + vec2(14.0, 7.0), galley, pal.text);
 }
 
 pub fn edit_banner(ui: &Ui, rect: Rect, pal: &crate::theme::Palette) {

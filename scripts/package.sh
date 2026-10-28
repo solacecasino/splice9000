@@ -26,6 +26,7 @@ case "$(uname -s)" in
     cp target/release/splice9000 README.md LICENSE "target/stage/$d/"
     cp packaging/linux/install.sh packaging/linux/splice9000.desktop "target/stage/$d/"
     cp assets/icon-256.png "target/stage/$d/splice9000.png"
+    scripts/stage-adapters.sh "target/stage/$d/adapters"
     tar -czf "dist/$d.tar.gz" -C target/stage "$d"
     ls -la dist
     exit 0
@@ -34,9 +35,10 @@ case "$(uname -s)" in
     cargo build --release
     rm -rf target/stage && mkdir -p target/stage
     cp target/release/splice9000.exe README.md LICENSE target/stage/
+    scripts/stage-adapters.sh target/stage/adapters
     out="dist/splice9000-$VERSION-windows-$(arch).zip"
     rm -f "$out"
-    (cd target/stage && python -m zipfile -c "../../$out" *)
+    (cd target/stage && python -m zipfile -c "../../$out" splice9000.exe README.md LICENSE adapters)
     ls -la dist
     exit 0
     ;;
@@ -86,6 +88,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# The built-in adapters, inside the app.
+scripts/stage-adapters.sh "$APP/Contents/Resources/adapters" aarch64-apple-darwin x86_64-apple-darwin
 
 codesign --force --deep --sign - "$APP"
 rm -f "dist/splice9000-$VERSION-macos-universal.zip"

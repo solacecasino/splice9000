@@ -72,9 +72,29 @@ levels.
 
 The layout is saved to `layout.toml`, which can also be edited by hand.
 
+## Adapters
+
+splice9000 has only what you need, and adapters add the rest. An adapter can
+add commands, panels and export formats.
+
+- **Find one** in the [adapter catalog](https://github.com/solacecasino/splice9000-adapters/blob/main/CATALOG.md),
+  download the zip for your computer, and **drop it on the window**.
+  splice9000 shows what it adds and what it may do, and installs it when you
+  click **Install**. splice9000 itself never goes online.
+- **Two come built in:** Export Presets (YouTube, vertical, square, GIF,
+  ProRes, WebM, sound only) and Frame Grab (File → Save Frame as PNG,
+  ⌘⇧G). Pick an export format in the Export panel or File → Export As.
+- **Remove anything you don't need** in the Adapters panel
+  (Adapters → Manage). A built-in adapter is then left out completely, and
+  Add Back returns it.
+- **Make your own** in a few lines of Python, or with no code at all for
+  export formats: see [docs/adapters.md](docs/adapters.md) and the
+  [template](https://github.com/solacecasino/splice9000-adapters/tree/main/template).
+
 ## Menus
 
-File, Edit, View, Playback and Help hold every command, with your own
+File, Edit, View, Playback, Adapters and Help hold every command (and
+adapters' commands), with your own
 shortcuts from keys.toml. On macOS they're in the system menu bar; on Windows
 and Linux, in the strip at the top of the window. The most used tools
 (Layout, Import, Export) are also at the top right of the window.
@@ -89,6 +109,7 @@ There's no settings window. Everything is in plain text files in one folder
 | `settings.toml` | ffmpeg's path, preview quality, sound and volume, export format and codec, colors |
 | `keys.toml` | any key for any command (see the Help panel for the list) |
 | `layout.toml` | the panels and where they are |
+| `adapters/` | installed adapters (`adapters.toml` lists built-in ones you removed) |
 
 Saved changes apply at once, with no restart. A file with a mistake falls
 back to the defaults and the Log panel says what's wrong. Copying the folder

@@ -19,6 +19,7 @@ pub const PANELS: &[(&str, &str)] = &[
     ("export", "Export"),
     ("log", "Log"),
     ("help", "Help"),
+    ("adapters", "Adapters"),
 ];
 
 pub fn title(kind: &str) -> &str {
@@ -235,7 +236,8 @@ struct File {
 const FILE_HEADER: &str = "# splice9000 layout. Rearranged by dragging panel headers and saved here;\n\
 # it can be edited by hand too. A node is either `panel = \"<kind>\"` or a\n\
 # `split = \"row\"|\"column\"` with `sizes` and `[[...children]]`.\n\
-# Panels: preview, timeline, media, transport, clip, export, log, help.\n\n";
+# Panels: preview, timeline, media, transport, clip, export, log, help,\n\
+# adapters, and adapters' own as `adapter:<name>/<panel id>`.\n\n";
 
 pub fn to_toml(root: &Node) -> String {
     let body = toml::to_string(&File { root: root.clone() }).unwrap_or_default();
@@ -284,6 +286,13 @@ pub struct Frame<'a> {
     pub palette: &'a Palette,
     pub headers: bool,
     pub panel: &'a mut dyn FnMut(&str, Part, &mut Ui),
+    /// Each panel's title; adapters name their own panels.
+    pub title: &'a dyn Fn(&str) -> String,
+}
+
+/// A panel an adapter adds: `adapter:<adapter name>/<panel id>`.
+pub fn adapter_panel(kind: &str) -> Option<(&str, &str)> {
+    kind.strip_prefix("adapter:")?.rsplit_once('/')
 }
 
 impl LayoutUi {
@@ -378,7 +387,8 @@ impl LayoutUi {
     fn leaf(&mut self, ui: &mut Ui, kind: &str, rect: Rect, path: &[usize], f: &mut Frame<'_>, action: &mut Option<Action>) {
         let pal = *f.palette;
         ui.painter().rect_filled(rect, 0.0, pal.panel);
-        let known = PANELS.iter().any(|p| p.0 == kind);
+        let known = PANELS.iter().any(|p| p.0 == kind) || adapter_panel(kind).is_some();
+        let name = (f.title)(kind);
         let mut body = rect;
         if f.headers {
             let header = Rect::from_min_size(rect.min, vec2(rect.width(), HEADER_HEIGHT.min(rect.height())));
@@ -389,9 +399,9 @@ impl LayoutUi {
                 ui.ctx().set_cursor_icon(CursorIcon::Grab);
             }
             if r.drag_started() {
-                self.dragging = Some((path.to_vec(), title(kind).to_owned()));
+                self.dragging = Some((path.to_vec(), name.clone()));
             }
-            let text = if known { title(kind).to_uppercase() } else { kind.to_uppercase() };
+            let text = name.to_uppercase();
             let p = ui.painter().with_clip_rect(header.intersect(ui.clip_rect()));
             let color = if r.hovered() || r.dragged() { pal.text } else { pal.weak };
             p.text(header.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(10.5), color);
@@ -420,14 +430,14 @@ impl LayoutUi {
             // Edit mode: the whole panel is a handle to drag, with a menu.
             fg.rect_filled(rect, 0.0, pal.panel.gamma_multiply(0.9));
             fg.rect_stroke(rect, 0.0, Stroke::new(1.0, pal.accent.gamma_multiply(0.5)), StrokeKind::Inside);
-            fg.text(rect.center(), Align2::CENTER_CENTER, title(kind).to_uppercase(), FontId::proportional(13.0), pal.text);
+            fg.text(rect.center(), Align2::CENTER_CENTER, name.to_uppercase(), FontId::proportional(13.0), pal.text);
             let r = egui::Area::new(Id::unique(("layout panel", path)))
                 .order(egui::Order::Foreground)
                 .fixed_pos(rect.min)
                 .show(ui.ctx(), |ui| ui.allocate_rect(rect, Sense::click_and_drag()))
                 .inner;
             if r.drag_started() {
-                self.dragging = Some((path.to_vec(), title(kind).to_owned()));
+                self.dragging = Some((path.to_vec(), name.clone()));
             }
             r.context_menu(|ui| panel_menu(ui, path, action));
         }
@@ -581,7 +591,7 @@ mod tests {
             let mut changed = false;
             let palette = Palette::new(&crate::settings::Look::default());
             let mut out = ctx.run_ui(input, |ui| {
-                let mut f = Frame { palette: &palette, headers: true, panel: &mut |_, _, _| {} };
+                let mut f = Frame { palette: &palette, headers: true, panel: &mut |_, _, _| {}, title: &|k| title(k).to_owned() };
                 changed |= lui.show(ui, root, screen, &mut f).changed;
             });
             out.textures_delta.clear();

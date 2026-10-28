@@ -1,6 +1,6 @@
 [package]
 name = "splice9000"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 description = "A bare, modular video editor: cut clips on a timeline and export, with a layout you rearrange like foobar2000."
 license = "MIT"
@@ -23,6 +23,8 @@ png = "0.18.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
+# Installing adapters from their zips.
+zip = { version = "9.1.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 cpal = { version = "0.18.2", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
@@ -36,8 +38,10 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = ["std", "CALayer", "CATransaction", "objc2-core-foundation"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
 
-# Windows and Linux: softbuffer hands the drawn pixels to the window.
+# Windows and Linux: softbuffer hands the drawn pixels to the window, and
+# removed adapters go to the system's trash.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
+trash = "5.2.9"
 softbuffer = { version = "0.4.8", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"] }
 
 [profile.release]

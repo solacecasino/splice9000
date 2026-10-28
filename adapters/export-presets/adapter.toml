@@ -1,0 +1,67 @@
+# Export formats for common places your video goes. Only presets: nothing of
+# this adapter runs. Copy it and change the numbers to make your own.
+name = "Export Presets"
+version = "0.1.0"
+author = "splice9000"
+license = "MIT"
+description = "Ready-made export formats: YouTube, vertical and square video, GIF, ProRes, WebM and sound only."
+homepage = "https://github.com/solacecasino/splice9000/tree/main/adapters/export-presets"
+
+[[exports]]
+id = "youtube"
+label = "YouTube 1080p"
+extension = "mp4"
+width = 1920
+height = 1080
+video = ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-profile:v", "high", "-pix_fmt", "yuv420p", "-g", "60", "-bf", "2"]
+audio = ["-c:a", "aac", "-b:a", "320k", "-ar", "48000"]
+
+[[exports]]
+id = "vertical"
+label = "Vertical 9:16 (Reels, Shorts, TikTok)"
+extension = "mp4"
+width = 1080
+height = 1920
+video = ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p"]
+audio = ["-c:a", "aac", "-b:a", "192k"]
+
+[[exports]]
+id = "square"
+label = "Square 1:1"
+extension = "mp4"
+width = 1080
+height = 1080
+video = ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p"]
+audio = ["-c:a", "aac", "-b:a", "192k"]
+
+[[exports]]
+id = "gif"
+label = "GIF (480 px, 15 fps)"
+extension = "gif"
+width = 480
+height = 270
+# A palette made for this clip, so GIF's 256 colors look their best.
+video_filter = "fps=15,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=sierra2_4a"
+video = ["-loop", "0"]
+no_audio = true
+
+[[exports]]
+id = "prores"
+label = "ProRes 422 HQ (for editing elsewhere)"
+extension = "mov"
+video = ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le", "-vendor", "apl0"]
+audio = ["-c:a", "pcm_s16le"]
+
+[[exports]]
+id = "webm"
+label = "WebM (VP9, for the web)"
+extension = "webm"
+video = ["-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-row-mt", "1", "-deadline", "good", "-cpu-used", "4", "-pix_fmt", "yuv420p"]
+audio = ["-c:a", "libopus", "-b:a", "128k"]
+
+[[exports]]
+id = "sound"
+label = "Sound only (M4A)"
+extension = "m4a"
+no_video = true
+audio = ["-c:a", "aac", "-b:a", "256k"]

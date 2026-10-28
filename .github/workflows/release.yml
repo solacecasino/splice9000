@@ -2,7 +2,9 @@
 # universal app, also run on an Intel Mac), Windows (x64 and Arm) and Linux
 # (x64 and Arm). Every machine runs the tests with ffmpeg installed, so a
 # real export runs on each; then each download is unpacked and started with
-# a sample edit loaded, and a screenshot of it is kept. Pushing a tag like
+# a sample edit loaded, and a screenshot of it is kept. The built-in
+# adapters are checked inside each download: every export preset exports
+# for real (in cargo test), and Frame Grab saves a frame. Pushing a tag like
 # v0.0.2 also publishes a GitHub release with every download, using
 # docs/releases/<tag>.md as the notes; any other push runs the same checks
 # without releasing.
@@ -33,10 +35,12 @@ jobs:
       - name: ffmpeg
         run: brew install ffmpeg
       - name: Test
-        run: cargo test
+        run: |
+          cargo test
+          cargo test --manifest-path adapters/frame-grab/Cargo.toml
       - name: Package
         run: scripts/package.sh
-      - name: Check the download
+      - name: Check the download and its built-in adapters
         run: |
           set -e
           rm -rf x && ditto -x -k dist/splice9000-*-macos-universal.zip x
@@ -45,6 +49,10 @@ jobs:
           lipo -archs "$app" | grep -q arm64
           codesign -v x/splice9000.app
           "$app" --version
+          grab=x/splice9000.app/Contents/Resources/adapters/frame-grab/frame-grab
+          lipo -archs "$grab" | grep -q x86_64
+          test -f x/splice9000.app/Contents/Resources/adapters/export-presets/adapter.toml
+          python3 scripts/test-frame-grab.py "$grab"
       - name: Screenshot with a sample edit
         timeout-minutes: 3
         run: |
@@ -89,6 +97,7 @@ jobs:
           uname -m
           rm -rf x && ditto -x -k dist/splice9000-*-macos-universal.zip x
           arch -x86_64 x/splice9000.app/Contents/MacOS/splice9000 --version
+          python3 scripts/test-frame-grab.py x/splice9000.app/Contents/Resources/adapters/frame-grab/frame-grab
 
   windows:
     strategy:
@@ -116,6 +125,7 @@ jobs:
         run: |
           ffmpeg -version | head -1
           cargo test
+          cargo test --manifest-path adapters/frame-grab/Cargo.toml
       - name: Package
         shell: bash
         run: |
@@ -127,8 +137,10 @@ jobs:
         run: |
           set -e
           rm -rf x && mkdir x && cd x && unzip -q ../dist/splice9000-*-windows-*.zip
-          ls
+          ls -R
           ./splice9000.exe --version
+          test -f adapters/export-presets/adapter.toml
+          cd .. && python scripts/test-frame-grab.py x/adapters/frame-grab/frame-grab.exe
       # Arm runners sit on Windows' first-run privacy screen, over everything.
       - name: Screenshot with a sample edit
         if: matrix.arch == 'x64'
@@ -178,7 +190,9 @@ jobs:
           sudo apt-get install -y pkg-config libasound2-dev libxkbcommon-x11-0 ffmpeg \
             xvfb openbox imagemagick xdotool desktop-file-utils
       - name: Test
-        run: cargo test
+        run: |
+          cargo test
+          cargo test --manifest-path adapters/frame-grab/Cargo.toml
       - name: Package
         run: |
           scripts/package.sh
@@ -189,6 +203,8 @@ jobs:
           mkdir -p x && tar xzf dist/splice9000-*-linux-*.tar.gz -C x
           app=$(echo x/splice9000-*/splice9000)
           "$app" --version
+          test -f x/splice9000-*/adapters/export-presets/adapter.toml
+          python3 scripts/test-frame-grab.py x/splice9000-*/adapters/frame-grab/frame-grab
           export HOME=$PWD/home XDG_DATA_HOME=$PWD/home/.local/share
           mkdir -p "$HOME"
           x/splice9000-*/install.sh

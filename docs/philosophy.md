@@ -4,7 +4,7 @@ The same ideals as Folio and Leaf. For the full how and why, see [ARCHITECTURE.m
 
 ## Core ideals
 
-1. **Start bare.** A fresh install opens to the essential thing and nothing else: no ribbon, no start screen, no account, no template store. Every extra feature is off by default or not in the app at all, and arrives only when the user installs it.
+1. **Start bare.** A fresh install opens to the essential thing and nothing else: no ribbon, no start screen, no account, no template store. Every extra feature is off by default or not in the app at all, and arrives only when the user installs it. What does come with the app can be removed.
 2. **Endlessly customizable, through files.** There's no settings window. Behaviour, shortcuts and looks live in plain text files (`settings.toml`, `keys.toml`, `layout.toml`) in one folder.
    - The app reloads them as soon as they're saved, with no restart.
    - Copying the folder moves your whole setup.
@@ -21,6 +21,7 @@ The same ideals as Folio and Leaf. For the full how and why, see [ARCHITECTURE.m
 
 - **One small core.** Timeline, preview, layout and export in one binary of about 3k lines, plus Folio's CPU-drawn window. No codecs are linked in: video is read and written by the system's ffmpeg, run as a separate program, so a bad file or a crashing decoder can't take the editor down.
 - **Everything is a panel, and panels go anywhere.** The window is a tree of splitters with panels at the leaves, like foobar2000. It's rearranged in layout edit mode or in `layout.toml`, and any panel can appear more than once.
+- **Adapters for everything else.** Separate programs speaking JSON over stdin/stdout, with declared permissions approved before they first run; they can crash without taking the app down. Export formats are adapters with no program at all. Two come built in and can be removed; the rest are found in the [catalog](https://github.com/solacecasino/splice9000-adapters) and installed by dropping a zip on the window. The app never goes online.
 - **Everything is a named command.** Every action has a name (`play`, `split`, `zoom fit`, `panel log`). One table drives key bindings, the menus, buttons and the Help panel.
 - **One owner of state.** All app state lives in one struct on the UI thread. ffprobe, the preview decoder and export run on their own threads and hand results back through channels and a one-frame mailbox, plus a wake-up.
 - **The maths is cheap.** Clip start times are kept as running totals, so finding what's under the playhead, what's on screen or where a drop goes is a binary search, and an edit redoes only the totals after it.

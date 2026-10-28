@@ -15,6 +15,8 @@ For people changing the code. The ideals behind these choices are in
 | `audio.rs` | the sound output, its lock-free ring, and the playback clock |
 | `menu.rs` | the menus: macOS's own menu bar, or drawn in the window |
 | `theme.rs` | the palette every surface draws with |
+| `adapters.rs` | adapters: finding, installing, approving, running, removing |
+| `hosting.rs` | what the app does for adapters: their requests, prompts, menus, keys |
 | `export.rs` | the ffmpeg command for an export, and running it |
 | `media.rs` | finding ffmpeg, reading files with ffprobe |
 | `keys.rs` | `COMMANDS`, the one list of commands, and `keys.toml` |
@@ -101,10 +103,29 @@ Moving a panel marks its old place, inserts it at the new one (which may
 shift paths) and then removes the mark. Unknown panel names show a note
 instead of failing, so layouts made by newer versions still open.
 
+## Adapters
+
+An adapter is a folder with an `adapter.toml` and, usually, a program that
+speaks JSON lines over stdin/stdout ([docs/adapters.md](docs/adapters.md)).
+The host is Leaf's, adapted: a reader thread per adapter turns its output
+into messages for the interface thread, which answers them in
+`hosting.rs`, so adapters never touch app state directly and the edit
+stays single-owner. Requests that need the user (`ui.confirm`,
+`ui.prompt`) are answered when the prompt is, without blocking the frame.
+
+Adapters come from two folders: built-in ones beside the program (inside
+the app on macOS) and installed ones in the config folder. Removing a
+built-in one writes its name to `adapters.toml` instead of touching the
+app's files, so Add Back works offline and app updates still update it.
+Export formats are plain data (`[[exports]]`) that `export::args` reads, so
+the most common kind of adapter runs no code.
+
 ## Commands
 
-Every action is a named command in `keys::COMMANDS`. Keys, buttons and the
-Help panel all run them through `App::run`. New features add a row there.
+Every action is a named command in `keys::COMMANDS`. Keys, menus, buttons
+and the Help panel all run them through `App::run`. New features add a row
+there. Adapters' commands are named `adapter "Name" id` and their export
+formats `export "Name" id`, and work the same way.
 
 ## Layout look
 

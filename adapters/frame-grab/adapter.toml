@@ -1,0 +1,14 @@
+name = "Frame Grab"
+version = "0.1.0"
+author = "splice9000"
+license = "MIT"
+description = "Saves the frame under the playhead as a full-size PNG."
+homepage = "https://github.com/solacecasino/splice9000/tree/main/adapters/frame-grab"
+run = ["./frame-grab"]
+permissions = ["edit.read"]
+
+[[commands]]
+id = "grab"
+label = "Save Frame as PNG…"
+keys = "cmd+shift+g"
+menu = "file"
