@@ -6,7 +6,8 @@
 //! preview-sized picture, not a 4K one. Finished frames go into a one-frame
 //! mailbox; a frame the interface hasn't shown yet is replaced, never queued.
 //! While playing, the next clip's ffmpeg is started before the current one
-//! ends, so cuts don't stall.
+//! ends, so cuts don't stall, and the clock starts with the first picture,
+//! so starting to play skips nothing.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -44,6 +45,8 @@ pub struct Frame {
     pub image: ColorImage,
     /// The timeline time it shows.
     pub time: f64,
+    /// Asked for while stopped, not a frame of playback.
+    pub still: bool,
 }
 
 #[derive(Default)]
@@ -112,7 +115,7 @@ impl Worker {
                     let image = read_frame(&mut child, w, h);
                     let _ = child.wait();
                     match image {
-                        Some(image) => self.post(|m| m.frame = Some(Frame { image, time: seg.at + (t - seg.src_in) })),
+                        Some(image) => self.post(|m| m.frame = Some(Frame { image, time: seg.at + (t - seg.src_in), still: true })),
                         None => self.post(|m| m.error = Some(format!("couldn't decode {}", seg.path.display()))),
                     }
                 }
@@ -137,8 +140,14 @@ impl Worker {
             let parts = segs.iter().map(|s| (s.path.clone(), s.audio, start_in(s), s.src_out - start_in(s))).collect();
             Some(Feeder::start(tools, a.clone(), parts))
         });
-        let started = Instant::now();
-        let clock = || audio.as_ref().map_or_else(|| started.elapsed(), |a| a.clock());
+        // The clock starts with the first picture, not the key press: the
+        // decoder takes a moment to start, and a clock already running would
+        // count its first frames as late and skip them.
+        let started = std::cell::Cell::new(None::<Instant>);
+        let clock = || match &audio {
+            Some(a) => a.clock(),
+            None => started.get().map_or(Duration::ZERO, |s| s.elapsed()),
+        };
         let finish = |child: Option<Child>, upcoming: Option<(usize, Child)>| {
             child.into_iter().chain(upcoming.map(|u| u.1)).for_each(kill);
             if let Some(f) = &feeder {
@@ -163,13 +172,24 @@ impl Worker {
                     }
                 },
             };
-            if let Some(next) = segs.get(i + 1) {
-                let (nw, nh) = fit(next.width, next.height, bw, bh);
-                let nb = start_in(next);
-                upcoming = self.spawn(next, nb, Some(next.src_out - nb), nw, nh, Some(fps), false).ok().map(|c| (i + 1, c));
-            }
             let mut n = 0u64;
             while let Some(image) = read_frame(&mut child, w, h) {
+                // The next clip's decoder starts once this one is showing,
+                // so the two don't compete for the first picture.
+                if n == 0
+                    && let Some(next) = segs.get(i + 1)
+                {
+                    let (nw, nh) = fit(next.width, next.height, bw, bh);
+                    let nb = start_in(next);
+                    upcoming = self.spawn(next, nb, Some(next.src_out - nb), nw, nh, Some(fps), false).ok().map(|c| (i + 1, c));
+                }
+                if started.get().is_none() {
+                    started.set(Some(Instant::now()));
+                    if let Some(a) = &audio {
+                        // The sound has been filling the ring meanwhile.
+                        a.active.store(true, Ordering::Release);
+                    }
+                }
                 let time = seg.at + (begin - seg.src_in) + n as f64 * frame_len;
                 n += 1;
                 let due = Duration::from_secs_f64((time - from).max(0.0));
@@ -186,7 +206,7 @@ impl Worker {
                     Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => return None,
                 }
-                self.post(|m| m.frame = Some(Frame { image, time }));
+                self.post(|m| m.frame = Some(Frame { image, time, still: false }));
             }
             let _ = child.wait();
         }
@@ -293,7 +313,6 @@ impl Feeder {
                 cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()
             };
             let ch = out.channels as usize;
-            let mut started = false;
             let mut upcoming = parts.first().and_then(spawn);
             for (i, part) in parts.iter().enumerate() {
                 let mut child = upcoming.take();
@@ -321,11 +340,7 @@ impl Feeder {
                     while at < samples.len() && !flag.load(Ordering::Relaxed) {
                         at += out.ring.push(&samples[at..]);
                         if at < samples.len() {
-                            if !started {
-                                // The ring is full: start the sound.
-                                out.active.store(true, Ordering::Release);
-                                started = true;
-                            }
+                            // Full: the sound starts with the first picture.
                             std::thread::sleep(Duration::from_millis(5));
                         }
                     }
@@ -333,10 +348,6 @@ impl Feeder {
                 if let Some(c) = child {
                     kill(c);
                 }
-            }
-            // Shorter than the ring: start the sound now.
-            if !flag.load(Ordering::Relaxed) {
-                out.active.store(true, Ordering::Release);
             }
             if let Some(c) = upcoming {
                 kill(c);

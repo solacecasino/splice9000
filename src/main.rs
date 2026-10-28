@@ -730,7 +730,9 @@ impl App {
         if let Some(e) = mail.error {
             log::error(e);
         }
-        if let Some(f) = mail.frame {
+        // A frame of playback that arrives after pausing would show the
+        // picture a moment past the pause, then jump back.
+        if let Some(f) = mail.frame.filter(|f| f.still || self.playing) {
             match &mut self.texture {
                 Some(t) => t.set(f.image, TextureOptions::LINEAR),
                 None => self.texture = Some(ctx.load_texture("preview", f.image, TextureOptions::LINEAR)),

@@ -20,7 +20,8 @@ pub struct Preview {
     pub max_height: u32,
     /// Frames per second while playing, at most.
     pub max_fps: f64,
-    /// Let ffmpeg use the system's video decoder (VideoToolbox, D3D11, VAAPI).
+    /// Play with the system's video decoder (VideoToolbox, D3D11, VAAPI):
+    /// less CPU while playing, but slower to start.
     pub hwaccel: bool,
     /// Sound while playing.
     pub audio: bool,
@@ -57,7 +58,7 @@ pub struct Look {
 
 impl Default for Preview {
     fn default() -> Self {
-        Self { max_height: 1080, max_fps: 60.0, hwaccel: true, audio: true, volume: 1.0 }
+        Self { max_height: 1080, max_fps: 60.0, hwaccel: false, audio: true, volume: 1.0 }
     }
 }
 
@@ -104,8 +105,10 @@ pub const EXAMPLE: &str = r##"# splice9000 settings. Saved changes apply at once
 max_height = 1080
 # Frames per second while playing, at most.
 max_fps = 60
-# Use the system's video decoder (less CPU, especially for 4K and HEVC).
-hwaccel = true
+# Play with the system's video decoder: a little less CPU while playing
+# (measured 38% against 44% for 1080p H.264, more for 4K and HEVC), but it
+# takes 0.3-0.4 s longer to start every time you press play.
+hwaccel = false
 # Sound while playing, and its volume (1 is as recorded). `m` mutes.
 audio = true
 volume = 1.0

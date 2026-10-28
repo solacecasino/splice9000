@@ -113,6 +113,7 @@ On an M-series MacBook (2560×1600 Retina), release build, 2026-10-27:
 | Sound while playing | no measurable CPU (23.0% with and without) |
 | Drawing one 1.3-megapixel video frame | 2.5–5 ms |
 | Showing one frame when scrubbing | about 95 ms |
+| Pressing play until the first frame | 90–210 ms (about 320 ms the first time, opening the sound device) |
 | Export, 15 s edit of 3 clips at 1080p (libx264, CRF 20, veryfast) | 2.0 s, 7.5× real time |
 
 What changed these numbers, and what didn't work:
@@ -131,8 +132,15 @@ What changed these numbers, and what didn't work:
 - Adding sound (cpal, muda for the menus, png for the icon) made the app
   0.5 MB bigger.
 - Hardware decoding makes a single scrub frame *slower* (260 ms against
-  95 ms): starting the decoder costs more than one frame saves. Scrubbing
-  decodes in software; playback uses the hardware (38% CPU against 44%).
+  95 ms): starting the decoder costs more than one frame saves. It also
+  made every press of play take 420–590 ms to show a picture, against
+  125–190 ms in software, for 6 points less CPU while playing (38% against
+  44%). It's off by default now (`hwaccel` in settings.toml).
+- Pressing play used to stutter: the sound's clock started at once, so the
+  frames that arrived while the decoder was starting counted as late and
+  were skipped (0.4–0.5 s of picture, then a jump). The clock now starts
+  with the first picture, and a frame that arrives after pausing is ignored
+  instead of flickering.
 - On macOS the window was first drawn into a single shared buffer, as in
   Folio. With video, the system sometimes showed a frame half drawn. There
   are now two buffers that take turns, which costs one more window-sized
