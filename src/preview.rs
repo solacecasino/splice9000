@@ -8,6 +8,10 @@
 //! While playing, the next clip's ffmpeg is started before the current one
 //! ends, so cuts don't stall, and the clock starts with the first picture,
 //! so starting to play skips nothing.
+//!
+//! A crossfade is one more segment: ffmpeg reads both clips and blends
+//! them. Playing faster than real time has ffmpeg hand over fewer frames
+//! and speed the sound up without changing its pitch.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -33,11 +37,24 @@ pub struct Segment {
     pub src_out: f64,
     /// Where the segment starts on the timeline.
     pub at: f64,
+    /// A crossfade from this file into another.
+    pub mix: Option<Box<Blend>>,
+}
+
+/// The incoming side of a crossfade (see `timeline::Mix`).
+#[derive(Clone, Debug)]
+pub struct Blend {
+    pub path: PathBuf,
+    pub audio: bool,
+    pub a_has: f64,
+    pub b_in: f64,
+    pub b_wait: f64,
 }
 
 pub enum Request {
     Still { seg: Segment, t: f64, bw: u32, bh: u32 },
-    Play { segs: Vec<Segment>, from: f64, bw: u32, bh: u32, fps: f64, audio: Option<Arc<Shared>> },
+    /// `rate`: 1 is real time, 2 twice as fast.
+    Play { segs: Vec<Segment>, from: f64, bw: u32, bh: u32, fps: f64, rate: f64, audio: Option<Arc<Shared>> },
     Stop,
 }
 
@@ -119,7 +136,7 @@ impl Worker {
                         None => self.post(|m| m.error = Some(format!("couldn't decode {}", seg.path.display()))),
                     }
                 }
-                Request::Play { segs, from, bw, bh, fps, audio } => next = self.play(segs, from, bw, bh, fps, audio),
+                Request::Play { segs, from, bw, bh, fps, rate, audio } => next = self.play(segs, from, bw, bh, fps, rate, audio),
                 Request::Stop => {}
             }
         }
@@ -129,16 +146,19 @@ impl Worker {
     /// which is returned. With `audio`, the sound plays too and its clock
     /// paces the picture; without, the wall clock does.
     #[allow(clippy::too_many_arguments)]
-    fn play(&self, segs: Vec<Segment>, from: f64, bw: u32, bh: u32, fps: f64, audio: Option<Arc<Shared>>) -> Option<Request> {
-        let frame_len = 1.0 / fps;
+    fn play(&self, segs: Vec<Segment>, from: f64, bw: u32, bh: u32, fps: f64, rate: f64, audio: Option<Arc<Shared>>) -> Option<Request> {
+        // Frames come `fps` a second of real time, so further apart in the
+        // edit the faster it plays; the clocks count real time.
+        let frame_len = rate / fps;
+        let source_fps = fps / rate;
         // Each segment starts at `from` or its own start, whichever is later.
         let start_in = |s: &Segment| s.src_in + (from - s.at).max(0.0);
         let feeder = audio.as_ref().and_then(|a| {
             a.active.store(false, Ordering::Release);
             a.reset();
             let tools = self.tools.clone()?;
-            let parts = segs.iter().map(|s| (s.path.clone(), s.audio, start_in(s), s.src_out - start_in(s))).collect();
-            Some(Feeder::start(tools, a.clone(), parts))
+            let parts = segs.iter().map(|s| (s.clone(), start_in(s))).collect();
+            Some(Feeder::start(tools, a.clone(), parts, rate))
         });
         // The clock starts with the first picture, not the key press: the
         // decoder takes a moment to start, and a clock already running would
@@ -163,7 +183,7 @@ impl Worker {
             let begin = start_in(seg);
             let mut child = match upcoming.take() {
                 Some((j, c)) if j == i => c,
-                _ => match self.spawn(seg, begin, Some(seg.src_out - begin), w, h, Some(fps), false) {
+                _ => match self.spawn(seg, begin, Some(seg.src_out - begin), w, h, Some(source_fps), false) {
                     Ok(c) => c,
                     Err(e) => {
                         finish(None, None);
@@ -181,7 +201,7 @@ impl Worker {
                 {
                     let (nw, nh) = fit(next.width, next.height, bw, bh);
                     let nb = start_in(next);
-                    upcoming = self.spawn(next, nb, Some(next.src_out - nb), nw, nh, Some(fps), false).ok().map(|c| (i + 1, c));
+                    upcoming = self.spawn(next, nb, Some(next.src_out - nb), nw, nh, Some(source_fps), false).ok().map(|c| (i + 1, c));
                 }
                 if started.get().is_none() {
                     started.set(Some(Instant::now()));
@@ -192,7 +212,7 @@ impl Worker {
                 }
                 let time = seg.at + (begin - seg.src_in) + n as f64 * frame_len;
                 n += 1;
-                let due = Duration::from_secs_f64((time - from).max(0.0));
+                let due = Duration::from_secs_f64(((time - from) / rate).max(0.0));
                 let now = clock();
                 if now > due + Duration::from_secs_f64(frame_len) {
                     // Behind: drop this frame and catch up.
@@ -212,7 +232,7 @@ impl Worker {
         }
         // Let the last of the sound play out.
         if let (Some(a), Some(last)) = (&audio, segs.last()) {
-            let end = Duration::from_secs_f64((last.at + (last.src_out - last.src_in) - from).max(0.0));
+            let end = Duration::from_secs_f64(((last.at + (last.src_out - last.src_in) - from) / rate).max(0.0));
             let deadline = Instant::now() + Duration::from_millis(500);
             while a.clock() < end && Instant::now() < deadline {
                 if let Ok(r) = self.rx.recv_timeout(Duration::from_millis(10)) {
@@ -237,6 +257,15 @@ impl Worker {
         if self.hwaccel && !one {
             cmd.args(["-hwaccel", "auto"]);
         }
+        if let Some(b) = &seg.mix {
+            Self::blend(&mut cmd, seg, b, t, w, h, fps.unwrap_or(30.0));
+            if one {
+                cmd.args(["-frames:v", "1"]);
+            }
+            cmd.args(["-pix_fmt", "rgba", "-f", "rawvideo", "-"]);
+            cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+            return cmd.spawn().map_err(|e| format!("couldn't run ffmpeg: {e}"));
+        }
         // Seeking before -i jumps to the nearest keyframe and decodes forward
         // to the exact time: fast and frame-accurate.
         cmd.arg("-ss").arg(format!("{t:.6}"));
@@ -257,6 +286,24 @@ impl Worker {
         cmd.args(["-pix_fmt", "rgba", "-f", "rawvideo", "-"]);
         cmd.stdout(Stdio::piped()).stderr(Stdio::null());
         cmd.spawn().map_err(|e| format!("couldn't run ffmpeg: {e}"))
+    }
+
+    /// A crossfade's picture from `t` (a time in the outgoing file) on. The
+    /// fade's progress depends on where it began, so both files are read
+    /// from its start and the frames before `t` dropped; a fade is short.
+    #[allow(clippy::too_many_arguments)]
+    fn blend(cmd: &mut Command, seg: &Segment, b: &Blend, t: f64, w: u32, h: u32, fps: f64) {
+        let len = seg.src_out - seg.src_in;
+        cmd.arg("-ss").arg(format!("{:.6}", seg.src_in)).arg("-t").arg(format!("{:.6}", b.a_has)).arg("-i").arg(&seg.path);
+        cmd.arg("-ss").arg(format!("{:.6}", b.b_in)).arg("-t").arg(format!("{:.6}", len - b.b_wait)).arg("-i").arg(&b.path);
+        let fit = format!("fps={fps:.6},scale={w}:{h}:flags=fast_bilinear:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p");
+        let hold_a = if len - b.a_has > 1e-6 { format!(",tpad=stop_mode=clone:stop_duration={:.6}", len - b.a_has) } else { String::new() };
+        let hold_b = if b.b_wait > 1e-6 { format!(",tpad=start_mode=clone:start_duration={:.6}", b.b_wait) } else { String::new() };
+        let skip = (t - seg.src_in).max(0.0);
+        cmd.arg("-filter_complex").arg(format!(
+            "[0:v:0]{fit}{hold_a}[x];[1:v:0]{fit}{hold_b}[y];[x][y]xfade=transition=fade:duration={len:.6}:offset=0,trim=start={skip:.6},setpts=PTS-STARTPTS[v]"
+        ));
+        cmd.args(["-map", "[v]"]);
     }
 
     fn post(&self, f: impl FnOnce(&mut Mailbox)) {
@@ -282,6 +329,26 @@ fn read_frame(child: &mut Child, w: u32, h: u32) -> Option<ColorImage> {
     Some(ColorImage::new([w as usize, h as usize], pixels))
 }
 
+/// ffmpeg's filter for playing sound `rate` times as fast at the same
+/// pitch. One atempo goes up to 2x in older ffmpegs, so they're chained.
+fn tempo(rate: f64) -> Option<String> {
+    if (rate - 1.0).abs() < 1e-6 {
+        return None;
+    }
+    let mut left = rate;
+    let mut steps = Vec::new();
+    while left > 2.0 + 1e-9 {
+        steps.push("atempo=2".to_owned());
+        left /= 2.0;
+    }
+    while left < 0.5 - 1e-9 {
+        steps.push("atempo=0.5".to_owned());
+        left /= 0.5;
+    }
+    steps.push(format!("atempo={left:.6}"));
+    Some(steps.join(","))
+}
+
 fn kill(mut child: Child) {
     let _ = child.kill();
     let _ = child.wait();
@@ -296,19 +363,50 @@ struct Feeder {
 }
 
 impl Feeder {
-    /// `parts`: path, has sound, start, length.
-    fn start(tools: Tools, out: Arc<Shared>, parts: Vec<(PathBuf, bool, f64, f64)>) -> Self {
+    /// `parts`: each segment and where in it to start; `rate` as in `Play`.
+    fn start(tools: Tools, out: Arc<Shared>, parts: Vec<(Segment, f64)>, rate: f64) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let thread = std::thread::Builder::new().name("sound".into()).spawn(move || {
-            let spawn = |p: &(PathBuf, bool, f64, f64)| -> Option<Child> {
-                if !p.1 {
-                    return None;
-                }
+            let tempo = tempo(rate);
+            let spawn = |(seg, from): &(Segment, f64)| -> Option<Child> {
                 let mut cmd = quiet(Command::new(&tools.ffmpeg));
                 cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
-                cmd.arg("-ss").arg(format!("{:.6}", p.2)).arg("-t").arg(format!("{:.6}", p.3.max(0.0)));
-                cmd.arg("-i").arg(&p.0).args(["-vn", "-sn", "-dn", "-f", "f32le"]);
+                match &seg.mix {
+                    Some(b) if seg.audio || b.audio => {
+                        // Both sides from the fade's start, as for the picture.
+                        let len = seg.src_out - seg.src_in;
+                        let fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo";
+                        let mut n = 0;
+                        let mut side = |cmd: &mut Command, has: bool, path: &PathBuf, at: f64, dur: f64, wait: f64| {
+                            if !has {
+                                return format!("anullsrc=r=48000:cl=stereo:d={len:.6},{fmt}");
+                            }
+                            cmd.arg("-ss").arg(format!("{at:.6}")).arg("-t").arg(format!("{dur:.6}")).arg("-i").arg(path);
+                            n += 1;
+                            let delay = if wait > 1e-6 { format!(",adelay=delays={}:all=1", (wait * 1000.0).round() as u64) } else { String::new() };
+                            format!("[{}:a:0]{fmt}{delay},apad=whole_dur={len:.6}", n - 1)
+                        };
+                        let a = side(&mut cmd, seg.audio, &seg.path, seg.src_in, b.a_has, 0.0);
+                        let bb = side(&mut cmd, b.audio, &b.path, b.b_in, len - b.b_wait, b.b_wait);
+                        let skip = (from - seg.src_in).max(0.0);
+                        let speed = tempo.as_ref().map_or(String::new(), |t| format!(",{t}"));
+                        cmd.arg("-filter_complex").arg(format!(
+                            "{a}[p];{bb}[q];[p][q]acrossfade=d={len:.6}:c1=tri:c2=tri,atrim=start={skip:.6},asetpts=PTS-STARTPTS{speed}[s]"
+                        ));
+                        cmd.args(["-map", "[s]"]);
+                    }
+                    Some(_) => return None,
+                    None if !seg.audio => return None,
+                    None => {
+                        cmd.arg("-ss").arg(format!("{from:.6}")).arg("-t").arg(format!("{:.6}", (seg.src_out - from).max(0.0)));
+                        cmd.arg("-i").arg(&seg.path).args(["-vn", "-sn", "-dn"]);
+                        if let Some(t) = &tempo {
+                            cmd.arg("-af").arg(t);
+                        }
+                    }
+                }
+                cmd.args(["-f", "f32le"]);
                 cmd.arg("-ac").arg(out.channels.to_string()).arg("-ar").arg(out.rate.to_string()).arg("-");
                 cmd.stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()
             };
@@ -317,7 +415,8 @@ impl Feeder {
             for (i, part) in parts.iter().enumerate() {
                 let mut child = upcoming.take();
                 upcoming = parts.get(i + 1).and_then(spawn);
-                let mut left = (part.3.max(0.0) * out.rate as f64).round() as usize * ch;
+                let len = (part.0.src_out - part.1).max(0.0) / rate;
+                let mut left = (len * out.rate as f64).round() as usize * ch;
                 let mut bytes = vec![0u8; 16 * 1024];
                 let mut have = 0;
                 let mut samples = Vec::with_capacity(bytes.len() / 4);
@@ -362,5 +461,18 @@ impl Feeder {
         if let Some(t) = self.thread.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = t.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chains_tempo_steps() {
+        assert_eq!(tempo(1.0), None);
+        assert_eq!(tempo(2.0).as_deref(), Some("atempo=2.000000"));
+        assert_eq!(tempo(8.0).as_deref(), Some("atempo=2,atempo=2,atempo=2.000000"));
+        assert_eq!(tempo(0.25).as_deref(), Some("atempo=0.5,atempo=0.500000"));
     }
 }

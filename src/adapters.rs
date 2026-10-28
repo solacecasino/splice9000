@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// The protocol version sent in `initialize`. New versions only add things.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 pub const EDIT_READ: &str = "edit.read";
 pub const EDIT_CHANGE: &str = "edit.change";
@@ -66,6 +66,24 @@ pub struct Manifest {
     pub panels: Vec<PanelSpec>,
     #[serde(default)]
     pub exports: Vec<ExportSpec>,
+    /// Snapping while dragging on the timeline (protocol 3).
+    #[serde(default)]
+    pub snapping: Option<SnapSpec>,
+}
+
+/// What dragging on the timeline snaps to, and from how close.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+pub struct SnapSpec {
+    /// "cuts" (the playhead to the cuts) and "playhead" (a clip's end to
+    /// the playhead).
+    #[serde(default)]
+    pub to: Vec<String>,
+    #[serde(default = "snap_pixels")]
+    pub pixels: f32,
+}
+
+fn snap_pixels() -> f32 {
+    8.0
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -476,6 +494,11 @@ impl Host {
         self.all.iter().flat_map(|a| a.manifest.exports.iter().map(move |e| (a.manifest.name.as_str(), e)))
     }
 
+    /// Snapping, from the first adapter that has it.
+    pub fn snapping(&self) -> Option<&SnapSpec> {
+        self.all.iter().find_map(|a| a.manifest.snapping.as_ref())
+    }
+
     pub fn export(&self, adapter: &str, id: &str) -> Option<&ExportSpec> {
         self.exports().find(|(a, e)| *a == adapter && e.id == id).map(|(_, e)| e)
     }
@@ -687,8 +710,8 @@ fn parse_manifest(text: &str, at: &str) -> Result<Manifest, String> {
             env!("CARGO_PKG_VERSION")
         ));
     }
-    if manifest.run.is_empty() && manifest.exports.is_empty() {
-        return Err(format!("{at}: needs a program to `run` or `[[exports]]`"));
+    if manifest.run.is_empty() && manifest.exports.is_empty() && manifest.snapping.is_none() {
+        return Err(format!("{at}: needs a program to `run`, `[[exports]]` or `[snapping]`"));
     }
     if manifest.run.is_empty() && !(manifest.commands.is_empty() && manifest.panels.is_empty()) {
         return Err(format!("{at}: commands and panels need a program to `run`"));
@@ -877,6 +900,9 @@ pub fn summary(m: &Manifest) -> Vec<String> {
     if !m.exports.is_empty() {
         adds.push(format!("{} export format{}", m.exports.len(), if m.exports.len() == 1 { "" } else { "s" }));
     }
+    if m.snapping.is_some() {
+        adds.push("snapping on the timeline".into());
+    }
     if !adds.is_empty() {
         lines.push(format!("Adds {}.", adds.join(", ")));
     }
@@ -935,6 +961,14 @@ pub fn command_name(kind: &str, adapter: &str, id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapping_needs_no_program() {
+        let m = parse_manifest("name = \"Snapping\"\nrequires = \"0.0.7\"\n[snapping]\nto = [\"cuts\"]\n", "x").unwrap();
+        assert_eq!(m.snapping, Some(SnapSpec { to: vec!["cuts".into()], pixels: 8.0 }));
+        assert!(summary(&m).iter().any(|l| l.contains("snapping on the timeline")));
+        assert!(parse_manifest("name = \"Empty\"\n", "x").is_err());
+    }
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("splice9000-adapters-{name}-{}", std::process::id()));

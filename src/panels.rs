@@ -470,7 +470,7 @@ fn adapters_panel(app: &mut App, ui: &mut Ui) {
                 ui.label(RichText::new(&m.description).color(pal.weak));
             }
             let can = if m.run.is_empty() {
-                "Presets only: nothing runs".to_owned()
+                if m.exports.is_empty() { "No program: nothing runs" } else { "Presets only: nothing runs" }.to_owned()
             } else if m.permissions.is_empty() {
                 "No permissions".to_owned()
             } else {
@@ -666,14 +666,25 @@ fn timeline(app: &mut App, ui: &mut Ui) {
         // A hairline between clips, like the one between panels.
         let shape = Rect::from_x_y_ranges(r.left() + 0.5..=r.right() - 0.5, r.y_range());
         painter.rect_filled(shape, 3.0, pal.clip(c.media));
+        let looks = app.looks.get(&app.media[c.media].path);
+        if let Some(l) = looks {
+            draw_looks(&painter.with_clip_rect(shape.shrink(1.0).intersect(rect)), shape, r.left(), &c, l, pps, pal.text);
+        }
         if app.selected_clip == Some(i) {
             painter.rect_stroke(shape, 3.0, Stroke::new(1.5, accent), StrokeKind::Inside);
         }
         if r.width() > 24.0 {
             let m = &app.media[c.media];
             let clip_painter = painter.with_clip_rect(r.shrink(4.0).intersect(rect));
-            clip_painter.text(r.left_top() + vec2(8.0, 6.0), Align2::LEFT_TOP, m.name(), FontId::proportional(11.0), pal.text);
-            clip_painter.text(r.left_top() + vec2(8.0, 21.0), Align2::LEFT_TOP, short_time(c.len()), FontId::monospace(9.5), pal.text.gamma_multiply(0.6));
+            let name = clip_painter.layout_no_wrap(m.name(), FontId::proportional(11.0), pal.text);
+            let time = clip_painter.layout_no_wrap(short_time(c.len()), FontId::monospace(9.5), pal.text.gamma_multiply(0.6));
+            // Over pictures, the words get a backing of the clip's color.
+            if looks.is_some_and(|l| l.thumbnails.is_some()) {
+                let w = name.size().x.max(time.size().x);
+                clip_painter.rect_filled(Rect::from_min_size(r.left_top() + vec2(5.0, 4.0), vec2(w + 6.0, 30.0)), 3.0, pal.clip(c.media).gamma_multiply(0.85));
+            }
+            clip_painter.galley(r.left_top() + vec2(8.0, 6.0), name, pal.text);
+            clip_painter.galley(r.left_top() + vec2(8.0, 21.0), time, pal.text);
         }
         if body.clicked() || body.drag_started() {
             app.selected_clip = Some(i);
@@ -708,6 +719,38 @@ fn timeline(app: &mut App, ui: &mut Ui) {
         app.view.drag = d;
     }
 
+    // Crossfades: a cross over each, as long as the fade.
+    let mut i = app.timeline.first_after(scroll).max(1);
+    while i < n && app.timeline.start(i) < t_right + 10.0 {
+        let d = app.timeline.fade(i);
+        if d > 0.0 {
+            let at = app.timeline.start(i);
+            let (x0, x1) = (x_of(at - d * 0.5), x_of(at + d * 0.5));
+            let (top, bottom) = (track.top() + 2.0, track.bottom() - 2.0);
+            let f = Rect::from_x_y_ranges(x0..=x1, top..=bottom);
+            painter.rect_filled(f, 2.0, pal.text.gamma_multiply(0.12));
+            let stroke = Stroke::new(1.0, pal.text.gamma_multiply(0.7));
+            painter.line_segment([pos2(x0, bottom), pos2(x1, top)], stroke);
+            painter.line_segment([pos2(x0, top), pos2(x1, bottom)], stroke);
+        }
+        i += 1;
+    }
+
+    // Snapping, when an adapter adds it; held Alt (Option) turns it off.
+    let snapping = app.adapters.snapping().filter(|_| !ui.input(|i| i.modifiers.alt)).cloned();
+    let snaps_to = |what: &str| snapping.as_ref().is_some_and(|s| s.to.iter().any(|t| t == what));
+    let near = snapping.as_ref().map_or(0.0, |s| (s.pixels / pps) as f64);
+    let mut snapped_at = None;
+    let seek_to = |app: &mut App, t: f64, snapped_at: &mut Option<f64>| {
+        let cut = app.timeline.nearest_cut(t);
+        if snaps_to("cuts") && (cut - t).abs() <= near {
+            *snapped_at = Some(cut);
+            app.seek(cut);
+        } else {
+            app.seek(t);
+        }
+    };
+
     // Ongoing drags.
     let released = ui.input(|i| i.pointer.any_released());
     match app.view.drag {
@@ -716,7 +759,14 @@ fn timeline(app: &mut App, ui: &mut Ui) {
                 let m = &app.media[app.timeline.clips()[clip].media];
                 let (mfps, end) = (m.fps, m.duration);
                 let v = from + ((p.x - x0) / pps) as f64;
-                let v = (v * mfps).round() / mfps;
+                let mut v = (v * mfps).round() / mfps;
+                // A clip's end snaps to the playhead.
+                let start = app.timeline.start(clip);
+                let src_in = app.timeline.clips()[clip].src_in;
+                if !left && snaps_to("playhead") && (start + (v - src_in) - app.playhead).abs() <= near && app.playhead > start {
+                    v = src_in + (app.playhead - start);
+                    snapped_at = Some(app.playhead);
+                }
                 if left {
                     app.timeline.set_in(clip, v, 1.0 / mfps);
                 } else {
@@ -740,7 +790,7 @@ fn timeline(app: &mut App, ui: &mut Ui) {
         }
         TimelineDrag::Scrub => {
             if let Some(p) = pointer {
-                app.seek(t_of(p.x));
+                seek_to(app, t_of(p.x), &mut snapped_at);
             }
         }
         _ => {}
@@ -751,7 +801,11 @@ fn timeline(app: &mut App, ui: &mut Ui) {
     if bg.clicked()
         && let Some(p) = pointer
     {
-        app.seek(t_of(p.x));
+        seek_to(app, t_of(p.x), &mut snapped_at);
+    }
+    if let Some(t) = snapped_at {
+        let x = x_of(t);
+        painter.line_segment([pos2(x, ruler.bottom()), pos2(x, track.bottom() + 6.0)], Stroke::new(1.0, pal.text.gamma_multiply(0.8)));
     }
     if released || !ui.input(|i| i.pointer.any_down()) {
         app.view.drag = TimelineDrag::None;
@@ -790,6 +844,51 @@ fn timeline(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// An adapter's thumbnails and waveform inside a clip's `shape`; `left` is
+/// where the clip begins, at `c.src_in`.
+fn draw_looks(p: &egui::Painter, shape: Rect, left: f32, c: &crate::timeline::Clip, l: &crate::Looks, pps: f32, ink: Color32) {
+    let view = p.clip_rect().intersect(shape);
+    if view.width() <= 0.0 {
+        return;
+    }
+    let both = l.thumbnails.is_some() && l.waveform.is_some();
+    let split = if both { shape.top() + shape.height() * 0.62 } else { shape.bottom() };
+    let src_at = |x: f32| c.src_in + ((x - left) / pps) as f64;
+    if let Some(t) = &l.thumbnails {
+        let lane = Rect::from_x_y_ranges(shape.x_range(), shape.top()..=split);
+        let tw = lane.height() * t.w as f32 / t.h as f32;
+        // Tiles line up with the clip's start, and only those in view.
+        let mut x = left + ((view.left() - left) / tw).floor().max(0.0) * tw;
+        while x < view.right() {
+            let k = ((src_at(x + tw * 0.5) / t.every) as usize).min(t.count - 1);
+            let (col, row) = ((k % t.columns) as f32, (k / t.columns) as f32);
+            let uv = Rect::from_min_size(
+                pos2(col * t.w as f32 / t.size[0], row * t.h as f32 / t.size[1]),
+                vec2(t.w as f32 / t.size[0], t.h as f32 / t.size[1]),
+            );
+            p.image(t.texture.id(), Rect::from_min_size(pos2(x, lane.top()), vec2(tw, lane.height())), uv, Color32::from_gray(225));
+            x += tw;
+        }
+    }
+    if let Some(w) = &l.waveform {
+        let lane = Rect::from_x_y_ranges(shape.x_range(), if both { split..=shape.bottom() } else { shape.top()..=shape.bottom() }).shrink2(vec2(0.0, 3.0));
+        let (mid, half) = (lane.center().y, lane.height() * 0.5);
+        let color = ink.gamma_multiply(if both { 0.55 } else { 0.4 });
+        let mut mesh = egui::Mesh::default();
+        // One bar per point: the loudest peak under it.
+        let mut x = view.left().floor();
+        while x < view.right() {
+            let a = ((src_at(x) * w.per_second) as usize).min(w.peaks.len());
+            let b = ((src_at(x + 1.0) * w.per_second).ceil() as usize).clamp(a + 1, w.peaks.len().max(a + 1)).min(w.peaks.len());
+            let peak = w.peaks[a..b].iter().copied().max().unwrap_or(0);
+            let h = (peak as f32 / 255.0 * half).max(0.5);
+            mesh.add_colored_rect(Rect::from_x_y_ranges(x..=x + 1.0, mid - h..=mid + h), color);
+            x += 1.0;
+        }
+        p.add(mesh);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -802,5 +901,63 @@ mod tests {
         assert_eq!(timecode(10.0, 30000.0 / 1001.0), "00:10:00");
         assert_eq!(timecode(10.0 - 1e-9, 25.0), "00:10:00");
         assert_eq!(short_time(75.0), "1:15");
+    }
+
+    /// Drags on the timeline with real pointer events through egui, with
+    /// a Snapping adapter (only its adapter.toml) built in.
+    #[test]
+    fn snapping_follows_its_adapter() {
+        let dir = std::env::temp_dir().join(format!("splice9000-snap-{}", std::process::id()));
+        let builtin = dir.join("builtin");
+        std::fs::create_dir_all(builtin.join("snapping")).unwrap();
+        std::fs::create_dir_all(dir.join("config")).unwrap();
+        std::fs::write(builtin.join("snapping/adapter.toml"), "name = \"Snapping\"\n[snapping]\nto = [\"cuts\", \"playhead\"]\npixels = 8\n").unwrap();
+        // SAFETY: only this test reads or writes the environment.
+        unsafe { std::env::set_var("SPLICE9000_BUILTIN_ADAPTERS", &builtin) };
+        let ctx = egui::Context::default();
+        let mut app = App::new(&ctx, dir.join("config"));
+        assert!(app.adapters.snapping().is_some());
+        let m = crate::media::Media { path: "/m.mp4".into(), duration: 4.0, width: 640, height: 360, fps: 30.0, audio: false };
+        app.media = vec![m];
+        let clip = |a, b| crate::timeline::Clip { media: 0, src_in: a, src_out: b, fade: 0.0 };
+        app.timeline = crate::timeline::Timeline::new(vec![clip(0.0, 2.0), clip(2.0, 3.0)]);
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 200.0));
+        let frame = |app: &mut App, mut events: Vec<egui::Event>, alt: bool| {
+            events.insert(0, egui::Event::ModifiersChanged(egui::Modifiers { alt, ..Default::default() }));
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                app.view.pps = 100.0;
+                app.view.scroll = 0.0;
+                timeline(app, ui);
+            });
+            out.textures_delta.clear();
+        };
+        let button = |pos: Pos2, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        let drag = |app: &mut App, from: Pos2, to: Pos2, alt: bool| {
+            frame(app, vec![], alt);
+            frame(app, vec![egui::Event::PointerMoved(from)], alt);
+            frame(app, vec![button(from, true)], alt);
+            for k in 1..=8 {
+                frame(app, vec![egui::Event::PointerMoved(from + (to - from) * (k as f32 / 8.0))], alt);
+            }
+            frame(app, vec![button(to, false)], alt);
+        };
+        // Scrubbing on the ruler (100 points a second) to 1.96 s: 4 points
+        // from the cut at 2 s, so it lands on the cut; with Alt it doesn't.
+        drag(&mut app, pos2(150.0, 10.0), pos2(196.0, 10.0), false);
+        assert_eq!(app.playhead, 2.0);
+        drag(&mut app, pos2(150.0, 10.0), pos2(196.0, 10.0), true);
+        assert!((app.playhead - 59.0 / 30.0).abs() < 1e-9, "{}", app.playhead);
+        // Trimming the last clip's end (at 5 s) out to 5.95 s, near the
+        // playhead at 6 s: the end lands on the playhead.
+        // With Alt, it ends where it was let go (as egui saw the drag start).
+        for alt in [false, true] {
+            app.playhead = 6.0;
+            app.timeline = crate::timeline::Timeline::new(vec![clip(0.0, 2.0), clip(0.0, 3.0)]);
+            drag(&mut app, pos2(500.0, 60.0), pos2(595.0, 60.0), alt);
+            let end = app.timeline.clips()[1].src_out;
+            assert!(if alt { (3.9..3.97).contains(&end) } else { end == 4.0 }, "{:?}", app.timeline.clips());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

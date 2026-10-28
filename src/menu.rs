@@ -136,10 +136,11 @@ pub fn shortcut_text(key: &str) -> String {
     parts.join(if mac { "" } else { "+" })
 }
 
-#[cfg(target_os = "macos")]
+// Tests run off the main thread, where macOS allows no menu bar.
+#[cfg(all(target_os = "macos", not(test)))]
 pub use native::MenuBar;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 mod native {
     use std::sync::{Arc, Mutex, OnceLock};
 
@@ -283,10 +284,10 @@ mod native {
 }
 
 /// Windows and Linux: the menus are drawn in the window (see `draw`).
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 pub struct MenuBar;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(not(target_os = "macos"), test))]
 impl MenuBar {
     pub fn install(_: &Keymap, _: &egui::Context, _: Option<(Vec<u8>, u32, u32)>, _: &Extras) -> Self {
         MenuBar

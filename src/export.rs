@@ -82,43 +82,54 @@ pub fn args(timeline: &Timeline, media: &[Media], fmt: Format, s: &Settings, pre
     let video = !preset.is_some_and(|p| p.no_video);
     // Sound-only formats always get a sound track, silent if need be.
     let audio = !preset.is_some_and(|p| p.no_audio) && (!video || clips.iter().any(|c| media[c.media].audio));
+    let pieces = timeline.pieces(0, |m| media[m].duration);
     let mut a: Vec<String> = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y"].map(String::from).to_vec();
-    for c in clips {
-        a.extend(["-ss".into(), format!("{:.6}", c.src_in), "-t".into(), format!("{:.6}", c.len())]);
-        a.extend(["-i".into(), media[c.media].path.to_string_lossy().into_owned()]);
-    }
-    let (w, h, fps) = (fmt.width, fmt.height, fmt.fps);
+    let input = |a: &mut Vec<String>, m: usize, from: f64, len: f64| {
+        a.extend(["-ss".into(), format!("{from:.6}"), "-t".into(), format!("{len:.6}")]);
+        a.extend(["-i".into(), media[m].path.to_string_lossy().into_owned()]);
+    };
+    let fps = fmt.fps;
     let mut graph = Vec::new();
     let mut joined = String::new();
-    for (i, c) in clips.iter().enumerate() {
-        let m = &media[c.media];
+    let mut n = 0;
+    for (k, p) in pieces.iter().enumerate() {
+        let m = &media[clips[p.clip].media];
+        let len = p.len();
+        let Some(x) = &p.mix else {
+            input(&mut a, clips[p.clip].media, p.src_in, len);
+            if video {
+                graph.push(format!("[{n}:v:0]{}[v{k}]", picture(m, fmt, false)));
+                joined.push_str(&format!("[v{k}]"));
+            }
+            if audio {
+                graph.push(format!("{}[a{k}]", sound(m, n, len, 0.0)));
+                joined.push_str(&format!("[a{k}]"));
+            }
+            n += 1;
+            continue;
+        };
+        // A crossfade: both clips' footage, as long as the piece, faded.
+        let b = &media[clips[x.into].media];
+        input(&mut a, clips[p.clip].media, p.src_in, x.a_has);
+        input(&mut a, clips[x.into].media, x.b_in, len - x.b_wait);
         if video {
-            let mut v = vec![];
-            if (m.fps - fps).abs() > 0.001 {
-                v.push(format!("fps={fps:.6}"));
-            }
-            if (m.width, m.height) != (w, h) {
-                v.push(format!("scale={w}:{h}:force_original_aspect_ratio=decrease"));
-                v.push(format!("pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"));
-            }
-            v.push("setsar=1".into());
-            graph.push(format!("[{i}:v:0]{}[v{i}]", v.join(",")));
-            joined.push_str(&format!("[v{i}]"));
+            let hold_a = if len - x.a_has > 1e-6 { format!(",tpad=stop_mode=clone:stop_duration={:.6}", len - x.a_has) } else { String::new() };
+            let hold_b = if x.b_wait > 1e-6 { format!(",tpad=start_mode=clone:start_duration={:.6}", x.b_wait) } else { String::new() };
+            graph.push(format!("[{n}:v:0]{}{hold_a}[x{k}]", picture(m, fmt, true)));
+            graph.push(format!("[{}:v:0]{}{hold_b}[y{k}]", n + 1, picture(b, fmt, true)));
+            graph.push(format!("[x{k}][y{k}]xfade=transition=fade:duration={len:.6}:offset=0,setsar=1[v{k}]"));
+            joined.push_str(&format!("[v{k}]"));
         }
         if audio {
-            let fmt = "aformat=sample_rates=48000:sample_fmts=fltp:channel_layouts=stereo";
-            if m.audio {
-                // Padded to the clip's length, so a short audio track can't
-                // pull the following clips out of sync.
-                graph.push(format!("[{i}:a:0]{fmt},apad=whole_dur={:.6}[a{i}]", c.len()));
-            } else {
-                graph.push(format!("anullsrc=r=48000:cl=stereo:d={:.6},{fmt}[a{i}]", c.len()));
-            }
-            joined.push_str(&format!("[a{i}]"));
+            graph.push(format!("{}[p{k}]", sound(m, n, len, 0.0)));
+            graph.push(format!("{}[q{k}]", sound(b, n + 1, len, x.b_wait)));
+            graph.push(format!("[p{k}][q{k}]acrossfade=d={len:.6}:c1=tri:c2=tri[a{k}]"));
+            joined.push_str(&format!("[a{k}]"));
         }
+        n += 2;
     }
     let outs = [video.then_some("[v]"), audio.then_some("[a]")].into_iter().flatten().collect::<String>();
-    graph.push(format!("{joined}concat=n={}:v={}:a={}{outs}", clips.len(), u8::from(video), u8::from(audio)));
+    graph.push(format!("{joined}concat=n={}:v={}:a={}{outs}", pieces.len(), u8::from(video), u8::from(audio)));
     let filter = preset.map_or("", |p| p.video_filter.trim());
     if video && !filter.is_empty() {
         graph.push(format!("[v]{filter}[vf]"));
@@ -159,6 +170,38 @@ pub fn args(timeline: &Timeline, media: &[Media], fmt: Format, s: &Settings, pre
     a.extend(["-progress".into(), "pipe:1".into(), "-nostats".into()]);
     a.push(out.to_string_lossy().into_owned());
     a
+}
+
+/// The filters that make one input's picture the output's size and rate.
+/// `mixed`: going into a crossfade, which needs both sides alike.
+pub fn picture(m: &Media, fmt: Format, mixed: bool) -> String {
+    let (w, h, fps) = (fmt.width, fmt.height, fmt.fps);
+    let mut v = vec![];
+    if mixed || (m.fps - fps).abs() > 0.001 {
+        v.push(format!("fps={fps:.6}"));
+    }
+    if (m.width, m.height) != (w, h) {
+        v.push(format!("scale={w}:{h}:force_original_aspect_ratio=decrease"));
+        v.push(format!("pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"));
+    }
+    v.push("setsar=1".into());
+    if mixed {
+        v.push("format=yuv420p".into());
+    }
+    v.join(",")
+}
+
+/// Input `n`'s sound as `len` seconds of 48 kHz stereo, after `wait`
+/// seconds of silence; silence throughout for a file without sound.
+fn sound(m: &Media, n: usize, len: f64, wait: f64) -> String {
+    let fmt = "aformat=sample_rates=48000:sample_fmts=fltp:channel_layouts=stereo";
+    if !m.audio {
+        return format!("anullsrc=r=48000:cl=stereo:d={len:.6},{fmt}");
+    }
+    let delay = if wait > 1e-6 { format!(",adelay=delays={}:all=1", (wait * 1000.0).round() as u64) } else { String::new() };
+    // Padded to the piece's length, so a short audio track can't pull the
+    // following clips out of sync.
+    format!("[{n}:a:0]{fmt}{delay},apad=whole_dur={len:.6}")
 }
 
 #[derive(Default)]
@@ -261,8 +304,8 @@ mod tests {
     fn leaves_matching_clips_alone() {
         let m = vec![media(1920, 1080, 30.0, true), media(1280, 720, 25.0, false)];
         let t = Timeline::new(vec![
-            Clip { media: 0, src_in: 1.0, src_out: 3.0 },
-            Clip { media: 1, src_in: 0.0, src_out: 2.5 },
+            Clip { media: 0, src_in: 1.0, src_out: 3.0, fade: 0.0 },
+            Clip { media: 1, src_in: 0.0, src_out: 2.5, fade: 0.0 },
         ]);
         let s = Settings::default();
         let fmt = Format::of(&t, &m, &s);
@@ -280,7 +323,7 @@ mod tests {
     #[test]
     fn no_audio_means_no_audio_track() {
         let m = vec![media(640, 360, 24.0, false)];
-        let t = Timeline::new(vec![Clip { media: 0, src_in: 0.0, src_out: 1.0 }]);
+        let t = Timeline::new(vec![Clip { media: 0, src_in: 0.0, src_out: 1.0, fade: 0.0 }]);
         let s = Settings::default();
         let a = args(&t, &m, Format::of(&t, &m, &s), &s, None, Path::new("/o.mp4"));
         assert!(!a.iter().any(|x| x == "[a]" || x == "-c:a"));
@@ -306,7 +349,7 @@ mod tests {
     #[test]
     fn presets_change_size_codecs_and_tracks() {
         let m = vec![media(1920, 1080, 30.0, true), media(1280, 720, 25.0, false)];
-        let t = Timeline::new(vec![Clip { media: 0, src_in: 0.0, src_out: 2.0 }, Clip { media: 1, src_in: 0.0, src_out: 1.0 }]);
+        let t = Timeline::new(vec![Clip { media: 0, src_in: 0.0, src_out: 2.0, fade: 0.0 }, Clip { media: 1, src_in: 0.0, src_out: 1.0, fade: 0.0 }]);
         let s = Settings::default();
         let base = Format::of(&t, &m, &s);
         let gif = ExportSpec {
@@ -372,9 +415,9 @@ mod tests {
         assert!(a.audio && !b.audio);
         let m = vec![a, b];
         let t = Timeline::new(vec![
-            Clip { media: 0, src_in: 0.5, src_out: 2.0 },
-            Clip { media: 1, src_in: 0.0, src_out: 2.0 },
-            Clip { media: 0, src_in: 2.0, src_out: 3.0 },
+            Clip { media: 0, src_in: 0.5, src_out: 2.0, fade: 0.0 },
+            Clip { media: 1, src_in: 0.0, src_out: 2.0, fade: 0.0 },
+            Clip { media: 0, src_in: 2.0, src_out: 3.0, fade: 0.0 },
         ]);
         let s = Settings { preset: "ultrafast".into(), ..Settings::default() };
         let out = dir.join("out.mp4");
@@ -390,6 +433,26 @@ mod tests {
         assert_eq!((got.width, got.height, got.audio), (640, 360, true));
         assert!((got.duration - 4.5).abs() < 0.1, "{}", got.duration);
         assert!((got.fps - 30.0).abs() < 0.01);
+
+        // The same with crossfades: one with footage on both sides, one
+        // into a file's very start (its first picture holds). The length
+        // doesn't change.
+        let mut clips = t.clips().to_vec();
+        clips[1].fade = 0.8;
+        clips[2].fade = 0.5;
+        let t = Timeline::new(clips);
+        let out = dir.join("faded.mp4");
+        let job = Job::start(&tools, args(&t, &m, Format::of(&t, &m, &s), &s, None, &out), out.clone(), t.duration(), || {});
+        let result = loop {
+            if let Some(r) = job.progress.lock().unwrap().finished.take() {
+                break r;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        result.unwrap();
+        let got = tools.probe(&out).unwrap();
+        assert_eq!((got.width, got.height, got.audio), (640, 360, true));
+        assert!((got.duration - 4.5).abs() < 0.1, "{}", got.duration);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -417,7 +480,7 @@ mod tests {
             .success();
         assert!(ok);
         let m = vec![tools.probe(&clip).unwrap()];
-        let t = Timeline::new(vec![Clip { media: 0, src_in: 0.0, src_out: 0.5 }, Clip { media: 0, src_in: 0.5, src_out: 1.0 }]);
+        let t = Timeline::new(vec![Clip { media: 0, src_in: 0.0, src_out: 0.5, fade: 0.0 }, Clip { media: 0, src_in: 0.5, src_out: 1.0, fade: 0.0 }]);
         let s = Settings::default();
         let have = tools.encoders();
         assert!(have.iter().any(|e| e == "libx264"), "the encoder list couldn't be read");

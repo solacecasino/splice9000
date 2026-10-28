@@ -1,0 +1,10 @@
+# Adapters from the catalog (github.com/solacecasino/splice9000-adapters)
+# that come with splice9000. They're removable like the rest (Adapters
+# panel → Remove; Add Back returns them), and the catalog has each one too.
+# scripts/stage-adapters.sh builds them from the catalog at this commit:
+catalog bfda3157e7e96e2238880641e599782f9f1fb14f
+waveforms
+thumbnails
+shuttle
+snapping
+crossfades

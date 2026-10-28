@@ -146,9 +146,18 @@ impl App {
         self.save_layout();
     }
 
+    /// What a stopped adapter showed goes with it.
     fn forget_adapter_panels(&mut self, adapter: &str) {
         let prefix = format!("adapter:{adapter}/");
         self.adapter_panels.retain(|k, _| !k.starts_with(&prefix));
+        for l in self.looks.values_mut() {
+            if l.waveform.as_ref().is_some_and(|w| w.adapter == adapter) {
+                l.waveform = None;
+            }
+            if l.thumbnails.as_ref().is_some_and(|t| t.adapter == adapter) {
+                l.thumbnails = None;
+            }
+        }
     }
 
     /// Offers to install a dropped or picked package.
@@ -230,6 +239,15 @@ impl App {
                 self.seek(t);
                 Ok(json!(self.playhead))
             }),
+            "playback.set" => match params.get("rate").and_then(Value::as_f64) {
+                Some(rate) => {
+                    self.set_rate(rate);
+                    Ok(json!(self.rate()))
+                }
+                None => Err("needs `rate`".into()),
+            },
+            "media.waveform" => self.set_waveform(adapter, &params).map(|()| Value::Null),
+            "media.thumbnails" => self.set_thumbnails(adapter, &params).map(|()| Value::Null),
             "ui.confirm" | "ui.prompt" => {
                 let Some(id) = id else { return Some(Err("ui prompts are requests: give them an id".into())) };
                 let (adapter, title, message) = (adapter.to_owned(), text("title"), text("message"));
@@ -260,6 +278,46 @@ impl App {
         })
     }
 
+    /// `media.waveform`: a file's sound, drawn on its clips.
+    fn set_waveform(&mut self, adapter: &str, params: &Value) -> Result<(), String> {
+        let path = PathBuf::from(params.get("path").and_then(Value::as_str).ok_or("needs `path`")?);
+        let per_second = params.get("per_second").and_then(Value::as_f64).filter(|r| *r > 0.0).ok_or("needs `per_second`")?;
+        let peaks = params.get("peaks").and_then(Value::as_array).ok_or("needs `peaks`")?;
+        let peaks = peaks.iter().map(|v| v.as_u64().unwrap_or(0).min(255) as u8).collect();
+        self.looks.entry(path).or_default().waveform = Some(crate::Waveform { adapter: adapter.to_owned(), per_second, peaks });
+        self.ctx.request_repaint();
+        Ok(())
+    }
+
+    /// `media.thumbnails`: a grid of pictures from one file, read once.
+    fn set_thumbnails(&mut self, adapter: &str, params: &Value) -> Result<(), String> {
+        let num = |k: &str| params.get(k).and_then(Value::as_f64).filter(|x| *x > 0.0).ok_or(format!("needs `{k}`"));
+        let (every, w, h, columns, count) = (num("every")?, num("width")? as usize, num("height")? as usize, num("columns")? as usize, num("count")? as usize);
+        let image = params.get("image").and_then(Value::as_str).ok_or("needs `image`, a PNG file")?;
+        let file = std::fs::File::open(image).map_err(|e| format!("{image}: {e}"))?;
+        let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+        let mut buf = vec![0; reader.output_buffer_size().ok_or("picture too big")?];
+        let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+        let (iw, ih) = (info.width as usize, info.height as usize);
+        let rows = count.div_ceil(columns);
+        if iw < columns * w || ih < rows * h || iw * ih > 64 << 20 {
+            return Err(format!("{image} is {iw}x{ih}, not {columns}x{rows} pictures of {w}x{h}"));
+        }
+        let pixels = match info.color_type {
+            png::ColorType::Rgb => buf[..iw * ih * 3].as_chunks::<3>().0.iter().map(|p| egui::Color32::from_rgb(p[0], p[1], p[2])).collect(),
+            png::ColorType::Rgba => buf[..iw * ih * 4].as_chunks::<4>().0.iter().map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3])).collect(),
+            other => return Err(format!("{image}: {other:?} pictures aren't read; send RGB")),
+        };
+        let texture = self.ctx.load_texture(format!("thumbs {image}"), egui::ColorImage::new([iw, ih], pixels), egui::TextureOptions::LINEAR);
+        let path = PathBuf::from(params.get("path").and_then(Value::as_str).unwrap_or_default());
+        let size = [iw as f32, ih as f32];
+        self.looks.entry(path).or_default().thumbnails = Some(crate::Thumbnails { adapter: adapter.to_owned(), every, w, h, columns, count, size, texture });
+        self.ctx.request_repaint();
+        Ok(())
+    }
+
     /// The edit as adapters see it.
     pub fn edit_json(&self) -> Value {
         let f = self.format();
@@ -267,11 +325,12 @@ impl App {
             "format": { "width": f.width, "height": f.height, "fps": f.fps },
             "duration": self.timeline.duration(),
             "playhead": self.playhead,
+            "rate": self.rate(),
             "selected": self.selected_clip,
             "file": self.file,
             "media": self.media,
             "clips": self.timeline.clips().iter().enumerate().map(|(i, c)| json!({
-                "media": c.media, "src_in": c.src_in, "src_out": c.src_out, "start": self.timeline.start(i),
+                "media": c.media, "src_in": c.src_in, "src_out": c.src_out, "start": self.timeline.start(i), "fade": c.fade,
             })).collect::<Vec<_>>(),
         })
     }
@@ -291,7 +350,9 @@ impl App {
             if src_out <= src_in {
                 return Err(format!("clip {n}: `src_out` must be after `src_in`"));
             }
-            clips.push(Clip { media, src_in, src_out });
+            // Protocol 3. Left out: none, as older adapters expect.
+            let fade = c.get("fade").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 10.0);
+            clips.push(Clip { media, src_in, src_out, fade });
         }
         self.snapshot();
         self.timeline = Timeline::new(clips);

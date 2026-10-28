@@ -38,7 +38,7 @@ use crate::export::{Format, Job};
 use crate::keys::Keymap;
 use crate::layout::{LayoutUi, Node, Side};
 use crate::media::{Media, Tools};
-use crate::preview::{Preview, Request, Segment};
+use crate::preview::{Blend, Preview, Request, Segment};
 use crate::settings::Settings;
 use crate::timeline::{Clip, Timeline};
 
@@ -74,6 +74,35 @@ pub struct View {
     pub drag: panels::TimelineDrag,
 }
 
+/// A media file's sound, drawn on its clips: the loudest moment in each
+/// `1 / per_second` of a second, 0 to 255. Sent by an adapter.
+pub struct Waveform {
+    pub adapter: String,
+    pub per_second: f64,
+    pub peaks: Vec<u8>,
+}
+
+/// Pictures from a media file, one every `every` seconds, `w` x `h` each,
+/// in a grid `columns` wide. Sent by an adapter.
+pub struct Thumbnails {
+    pub adapter: String,
+    pub every: f64,
+    pub w: usize,
+    pub h: usize,
+    pub columns: usize,
+    pub count: usize,
+    /// The whole grid's size in pixels.
+    pub size: [f32; 2],
+    pub texture: TextureHandle,
+}
+
+/// What adapters draw on a media file's clips.
+#[derive(Default)]
+pub struct Looks {
+    pub waveform: Option<Waveform>,
+    pub thumbnails: Option<Thumbnails>,
+}
+
 pub struct App {
     dir: PathBuf,
     palette: theme::Palette,
@@ -93,6 +122,10 @@ pub struct App {
     selected_clip: Option<usize>,
     playhead: f64,
     playing: bool,
+    /// How fast it plays: 1 is real time.
+    play_rate: f64,
+    /// Playing backward at this rate (below 0), since the time given.
+    reverse: Option<(f64, std::time::Instant)>,
     view: View,
     file: Option<PathBuf>,
     /// Unsaved changes to `file`.
@@ -131,6 +164,10 @@ pub struct App {
     note: Option<(String, f64)>,
     /// The edit changed since adapters were last told.
     emit_changed: bool,
+    /// The media list changed since adapters were last told.
+    emit_media: bool,
+    /// Waveforms and pictures adapters sent, by media file.
+    pub looks: HashMap<PathBuf, Looks>,
     /// The encoders this ffmpeg has, read the first time they matter.
     encoders: Option<Vec<String>>,
     title: String,
@@ -177,7 +214,7 @@ fn icon_rgba() -> Option<(Vec<u8>, u32, u32)> {
 }
 
 /// macOS shows a bare program's icon as a blank one in the dock; give it ours.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 fn set_dock_icon() {
     use objc2::runtime::{AnyClass, AnyObject};
     use objc2::{ClassType, msg_send};
@@ -251,7 +288,7 @@ impl App {
                 ctx.request_repaint();
             });
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(test)))]
         set_dock_icon();
         let (tx, adapter_rx) = channel();
         let adapters = {
@@ -280,6 +317,8 @@ impl App {
             selected_clip: None,
             playhead: 0.0,
             playing: false,
+            play_rate: 1.0,
+            reverse: None,
             view: View { pps: 60.0, scroll: 0.0, width: 800.0, drag: panels::TimelineDrag::None },
             file: None,
             dirty: false,
@@ -304,6 +343,8 @@ impl App {
             export_choice: None,
             note: None,
             emit_changed: false,
+            emit_media: false,
+            looks: HashMap::new(),
             encoders: None,
             title: String::new(),
             ctx: ctx.clone(),
@@ -390,6 +431,7 @@ impl App {
         self.requested = None;
         self.texture = None;
         self.dirty = false;
+        self.emit_media = true;
         self.zoom_fit();
     }
 
@@ -441,9 +483,10 @@ impl App {
         let frame = self.frame();
         match command {
             "play" => {
-                if self.playing {
+                if self.playing || self.reverse.is_some() {
                     self.stop();
                 } else {
+                    self.play_rate = 1.0;
                     self.play();
                 }
             }
@@ -647,7 +690,7 @@ impl App {
 
     pub fn add_clip(&mut self, m: usize, at: usize) {
         let Some(media) = self.media.get(m) else { return };
-        let clip = Clip { media: m, src_in: 0.0, src_out: media.duration };
+        let clip = Clip { media: m, src_in: 0.0, src_out: media.duration, fade: 0.0 };
         let was_empty = self.timeline.is_empty();
         self.snapshot();
         self.timeline.insert(at, clip);
@@ -702,6 +745,7 @@ impl App {
                         }
                     };
                     self.selected_media = Some(i);
+                    self.emit_media = true;
                     if append {
                         self.add_clip(i, self.timeline.len());
                     }
@@ -719,22 +763,10 @@ impl App {
         if self.playhead >= self.timeline.duration() - self.frame() * 0.5 {
             self.playhead = 0.0;
         }
-        let Some((first, _)) = self.timeline.locate(self.playhead) else { return };
-        let segs = (first..self.timeline.len())
-            .map(|i| {
-                let c = &self.timeline.clips()[i];
-                let m = &self.media[c.media];
-                Segment {
-                    path: m.path.clone(),
-                    width: m.width,
-                    height: m.height,
-                    audio: m.audio,
-                    src_in: c.src_in,
-                    src_out: c.src_out,
-                    at: self.timeline.start(i),
-                }
-            })
-            .collect();
+        let segs = self.segments(self.playhead);
+        if segs.is_empty() {
+            return;
+        }
         let fps = self.format().fps.min(self.settings.preview.max_fps.max(1.0));
         let (bw, bh) = self.preview_box;
         let gain = if self.muted { 0.0 } else { self.settings.preview.volume };
@@ -743,9 +775,62 @@ impl App {
             o.play();
             o.shared.clone()
         });
-        self.preview.send(Request::Play { segs, from: self.playhead, bw, bh, fps, audio });
+        let rate = self.play_rate;
+        self.preview.send(Request::Play { segs, from: self.playhead, bw, bh, fps, rate, audio });
         self.playing = true;
         self.requested = None;
+    }
+
+    /// What plays from `t` on: the pieces of the edit (clips and the
+    /// crossfades between them) that end after it.
+    fn segments(&self, t: f64) -> Vec<Segment> {
+        let Some((i, _)) = self.timeline.locate(t) else { return Vec::new() };
+        // From the clip before, in case `t` is in a fade into this one.
+        let pieces = self.timeline.pieces(i.saturating_sub(1), |m| self.media[m].duration);
+        let clips = self.timeline.clips();
+        pieces
+            .into_iter()
+            .filter(|p| p.at + p.len() > t + 1e-9)
+            .map(|p| {
+                let m = &self.media[clips[p.clip].media];
+                Segment {
+                    path: m.path.clone(),
+                    width: m.width,
+                    height: m.height,
+                    audio: m.audio,
+                    src_in: p.src_in,
+                    src_out: p.src_out,
+                    at: p.at,
+                    mix: p.mix.map(|x| {
+                        let b = &self.media[clips[x.into].media];
+                        Box::new(Blend { path: b.path.clone(), audio: b.audio, a_has: x.a_has, b_in: x.b_in, b_wait: x.b_wait })
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    /// How fast it's playing: 0 stopped, below 0 backward.
+    pub fn rate(&self) -> f64 {
+        match self.reverse {
+            Some((r, _)) => r,
+            None if self.playing => self.play_rate,
+            None => 0.0,
+        }
+    }
+
+    /// Plays at `rate` (1 is real time, 0 stops, below 0 backward), up to
+    /// 8 times as fast either way. Backward shows a picture at a time,
+    /// without sound.
+    pub fn set_rate(&mut self, rate: f64) {
+        let rate = if rate.is_finite() { rate.clamp(-8.0, 8.0) } else { 0.0 };
+        self.stop();
+        if rate > 0.0 {
+            self.play_rate = rate;
+            self.play();
+        } else if rate < 0.0 && self.playhead > 0.0 {
+            self.reverse = Some((rate, std::time::Instant::now()));
+        }
     }
 
     /// The sound output, opened the first time it's wanted.
@@ -766,6 +851,9 @@ impl App {
     }
 
     pub fn stop(&mut self) {
+        if self.reverse.take().is_some() {
+            self.playhead = self.snap(self.playhead);
+        }
         if let Some(o) = &self.sound {
             o.pause();
         }
@@ -802,30 +890,34 @@ impl App {
         if self.playing {
             return;
         }
+        if let Some((rate, since)) = self.reverse {
+            let now = std::time::Instant::now();
+            self.playhead = (self.playhead + rate * (now - since).as_secs_f64()).max(0.0);
+            self.reverse = (self.playhead > 0.0).then_some((rate, now));
+            ctx.request_repaint();
+        }
         let (bw, bh) = self.preview_box;
-        let want = self.timeline.locate(self.playhead).map(|(i, src)| {
-            let c = &self.timeline.clips()[i];
-            let m = &self.media[c.media];
-            (c.media, (src * m.fps + 1e-6).floor() as i64, bw, bh)
+        // The picture under the playhead: a frame of a file, or of a fade.
+        let seg = self.segments(self.playhead).into_iter().next();
+        let want = seg.as_ref().map(|seg| {
+            let key = if seg.mix.is_some() { usize::MAX } else { self.timeline.clips()[self.timeline.locate(self.playhead).map_or(0, |l| l.0)].media };
+            let fps = if seg.mix.is_some() { self.format().fps } else { self.media[key].fps };
+            let src = seg.src_in + (self.playhead - seg.at);
+            (key, ((if seg.mix.is_some() { self.playhead } else { src }) * fps + 1e-6).floor() as i64, bw, bh)
         });
         if want != self.requested {
             self.requested = want;
-            match want {
-                Some((mi, n, bw, bh)) => {
-                    let m = &self.media[mi];
-                    let seg = Segment {
-                        path: m.path.clone(),
-                        width: m.width,
-                        height: m.height,
-                        audio: false,
-                        src_in: 0.0,
-                        src_out: m.duration,
-                        at: 0.0,
+            match (seg, want) {
+                (Some(seg), Some((_, n, bw, bh))) => {
+                    let t = if seg.mix.is_some() {
+                        seg.src_in + (self.playhead - seg.at)
+                    } else {
+                        let fps = self.media[want.map_or(0, |w| w.0)].fps;
+                        (n as f64 / fps - 1e-4).max(0.0)
                     };
-                    let t = (n as f64 / m.fps - 1e-4).max(0.0);
                     self.preview.send(Request::Still { seg, t, bw, bh });
                 }
-                None => self.texture = None,
+                _ => self.texture = None,
             }
         }
     }
@@ -1028,6 +1120,10 @@ impl shell::App for App {
         self.menu.sync(&|k| layout.contains(k));
         self.show_prompt(&ctx);
         panels::note(ui, rect, self);
+        if std::mem::take(&mut self.emit_media) {
+            let paths: Vec<&PathBuf> = self.media.iter().map(|m| &m.path).collect();
+            self.adapters.emit("media", serde_json::json!({ "paths": paths }));
+        }
         if std::mem::take(&mut self.emit_changed) {
             let summary = serde_json::json!({ "duration": self.timeline.duration(), "clips": self.timeline.len() });
             self.adapters.emit("changed", summary);

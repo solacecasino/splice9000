@@ -85,9 +85,14 @@ add commands, panels and export formats.
   broadcast) and Scene Split.
   splice9000 shows what it adds and what it may do, and installs it when you
   click **Install**. splice9000 itself never goes online.
-- **Two come built in:** Export Presets (YouTube, vertical, square, GIF,
-  ProRes, WebM, sound only) and Frame Grab (File → Save Frame as PNG,
-  ⌘⇧G). Pick an export format in the Export panel or File → Export As.
+- **Seven come built in**, and the editing tools are among them:
+  Waveforms and Thumbnails on the timeline, Shuttle (J/K/L playback, up to
+  8x either way), Snapping (hold Alt to drag freely), Crossfades
+  (Edit → Crossfade at Nearest Cut, ⌘D), Export Presets (YouTube, vertical,
+  square, GIF, ProRes, WebM, sound only) and Frame Grab (File → Save Frame
+  as PNG, ⌘⇧G). Pick an export format in the Export panel or File → Export
+  As. The editing tools are the catalog's, so a newer one installed from
+  there takes over.
 - **Remove anything you don't need** in the Adapters panel
   (Adapters → Manage). A built-in adapter is then left out completely, and
   Add Back returns it.
@@ -175,11 +180,13 @@ What changed these numbers, and what didn't work:
 
 - Sound plays from the system's default output only, and only while
   playing (not while scrubbing).
-- One video track. No transitions, titles, effects, speed changes or
-  keyframes.
+- One video track. Crossfades are the only transition; no titles, effects,
+  speed changes or keyframes.
+- Playing backward (J) shows a picture at a time, about ten a second,
+  without sound. Playing faster than real time decodes every frame, so 8x
+  of 4K is as fast as the computer can go.
 - Scrubbing starts ffmpeg for every frame shown (~95 ms each); fast
   dragging shows fewer frames, never stale ones.
-- No clip thumbnails or audio waveforms on the timeline.
 - Used by hand on macOS only. Windows and Linux are built, tested and started
   with a sample edit by CI on every push (screenshots are kept), but not
   used by a person yet. Windows doesn't watch the config folder yet, so

@@ -55,6 +55,14 @@ than clips, the last being the edit's length). So:
 Times are seconds (`f64`). The playhead snaps to the edit's frames; trims
 snap to their source's frames.
 
+A clip's `fade` is a crossfade from the clip before, centered on the cut
+and borrowing footage from past both clips' ends, so it never moves
+anything: `starts` don't change. `pieces` turns the edit into what is
+played or exported: each clip's footage, and between them, a piece that
+reads both files and blends them (where a file runs out, ffmpeg's `tpad`
+holds its last picture). Preview and export both work from pieces, so a
+fade previews as it exports.
+
 ## Preview
 
 Frames come out of ffmpeg already scaled to the preview panel's exact pixel
@@ -68,6 +76,12 @@ the sound: late frames are dropped, not shown late. The next
 clip's ffmpeg is started while the current one plays, so cuts don't stall.
 Stills decode in software and playback with the system's decoder; see the
 README for the numbers behind that.
+
+Playing at `rate` asks ffmpeg for `fps / rate` frames a second of footage,
+so the screen still gets about `fps` a second, and speeds the sound up with
+`atempo` (same pitch). Playing backward is the still path run in reverse:
+the playhead moves back with the clock and the worker decodes the latest
+picture asked for.
 
 ## Sound
 
@@ -118,7 +132,14 @@ the app on macOS) and installed ones in the config folder. Removing a
 built-in one writes its name to `adapters.toml` instead of touching the
 app's files, so Add Back works offline and app updates still update it.
 Export formats are plain data (`[[exports]]`) that `export::args` reads, so
-the most common kind of adapter runs no code.
+the most common kind of adapter runs no code; so is `[snapping]`.
+
+The editing tools are adapters on small hooks in the core: `playback.set`
+(Shuttle), `fade` in the edit (Crossfades), `media.waveform` and
+`media.thumbnails` (drawn in `panels::draw_looks`; what an adapter sent
+goes when it stops), and `[snapping]`. With the adapter removed, the hook
+costs nothing. The built-in ones are built from the catalog repo at the
+commit in `adapters/bundled.txt` (`scripts/stage-adapters.sh`).
 
 ## Commands
 

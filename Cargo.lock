@@ -2790,7 +2790,7 @@ dependencies = [
 
 [[package]]
 name = "splice9000"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "accesskit_winit",
  "cpal",

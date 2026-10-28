@@ -4,7 +4,8 @@
 # real export runs on each; then each download is unpacked and started with
 # a sample edit loaded, and a screenshot of it is kept. The built-in
 # adapters are checked inside each download: every export preset exports
-# for real (in cargo test), and Frame Grab saves a frame. Pushing a tag like
+# for real (in cargo test), Frame Grab saves a frame, and the editing
+# adapters (built from the catalog) are run as splice9000 runs them. Pushing a tag like
 # v0.0.2 also publishes a GitHub release with every download, using
 # docs/releases/<tag>.md as the notes; any other push runs the same checks
 # without releasing.
@@ -22,12 +23,23 @@ permissions:
 env:
   # The export test fails, rather than skips, without ffmpeg.
   SPLICE9000_REQUIRE_FFMPEG: "1"
+  SPLICE9000_CATALOG: catalog-src
 
 jobs:
   mac:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      # The built-in adapters from the catalog, at the commit in
+      # adapters/bundled.txt (scripts/stage-adapters.sh builds them).
+      - id: catalog
+        shell: bash
+        run: echo "ref=$(awk '/^catalog /{print $2}' adapters/bundled.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: solacecasino/splice9000-adapters
+          ref: ${{ steps.catalog.outputs.ref }}
+          path: catalog-src
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
@@ -53,6 +65,7 @@ jobs:
           lipo -archs "$grab" | grep -q x86_64
           test -f x/splice9000.app/Contents/Resources/adapters/export-presets/adapter.toml
           python3 scripts/test-frame-grab.py "$grab"
+          python3 catalog-src/scripts/test_editing.py x/splice9000.app/Contents/Resources/adapters
       - name: Screenshot with a sample edit
         timeout-minutes: 3
         run: |
@@ -81,6 +94,16 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
+      # The built-in adapters from the catalog, at the commit in
+      # adapters/bundled.txt (scripts/stage-adapters.sh builds them).
+      - id: catalog
+        shell: bash
+        run: echo "ref=$(awk '/^catalog /{print $2}' adapters/bundled.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: solacecasino/splice9000-adapters
+          ref: ${{ steps.catalog.outputs.ref }}
+          path: catalog-src
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: ffmpeg
@@ -98,6 +121,7 @@ jobs:
           rm -rf x && ditto -x -k dist/splice9000-*-macos-universal.zip x
           arch -x86_64 x/splice9000.app/Contents/MacOS/splice9000 --version
           python3 scripts/test-frame-grab.py x/splice9000.app/Contents/Resources/adapters/frame-grab/frame-grab
+          python3 catalog-src/scripts/test_editing.py x/splice9000.app/Contents/Resources/adapters
 
   windows:
     strategy:
@@ -109,6 +133,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The built-in adapters from the catalog, at the commit in
+      # adapters/bundled.txt (scripts/stage-adapters.sh builds them).
+      - id: catalog
+        shell: bash
+        run: echo "ref=$(awk '/^catalog /{print $2}' adapters/bundled.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: solacecasino/splice9000-adapters
+          ref: ${{ steps.catalog.outputs.ref }}
+          path: catalog-src
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: ffmpeg (BtbN's builds, for this processor)
@@ -141,6 +175,7 @@ jobs:
           ./splice9000.exe --version
           test -f adapters/export-presets/adapter.toml
           cd .. && python scripts/test-frame-grab.py x/adapters/frame-grab/frame-grab.exe
+          python catalog-src/scripts/test_editing.py x/adapters
       # Arm runners sit on Windows' first-run privacy screen, over everything.
       - name: Screenshot with a sample edit
         if: matrix.arch == 'x64'
@@ -181,6 +216,16 @@ jobs:
     runs-on: ${{ matrix.os }}   # an older glibc, so it runs on more distros
     steps:
       - uses: actions/checkout@v4
+      # The built-in adapters from the catalog, at the commit in
+      # adapters/bundled.txt (scripts/stage-adapters.sh builds them).
+      - id: catalog
+        shell: bash
+        run: echo "ref=$(awk '/^catalog /{print $2}' adapters/bundled.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: solacecasino/splice9000-adapters
+          ref: ${{ steps.catalog.outputs.ref }}
+          path: catalog-src
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Dependencies
@@ -205,6 +250,7 @@ jobs:
           "$app" --version
           test -f x/splice9000-*/adapters/export-presets/adapter.toml
           python3 scripts/test-frame-grab.py x/splice9000-*/adapters/frame-grab/frame-grab
+          python3 catalog-src/scripts/test_editing.py x/splice9000-*/adapters
           export HOME=$PWD/home XDG_DATA_HOME=$PWD/home/.local/share
           mkdir -p "$HOME"
           x/splice9000-*/install.sh
