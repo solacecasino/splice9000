@@ -4,6 +4,10 @@ A bare, modular video editor. Drop clips in, cut them on a timeline, export.
 Every panel can be moved, added or removed, the way foobar2000 lets you
 rearrange its window.
 
+Its sibling is [wave9000](https://github.com/solacecasino/wave9000), a
+bare audio workstation in the same style: open a `.splice` project there to
+mix its sound on tracks, then bring the WAV back here.
+
 ![splice9000](docs/screenshot.png)
 
 It's a prototype (0.0.1): one video track, cuts and trims, preview with
