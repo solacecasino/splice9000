@@ -6,7 +6,9 @@ rearrange its window.
 
 Its sibling is [wave9000](https://github.com/solacecasino/wave9000), a
 bare audio workstation in the same style: open a `.splice` project there to
-mix its sound on tracks, then bring the WAV back here.
+mix its sound on tracks, then bring the WAV back here. Its sister is
+[grace9000](https://github.com/solacecasino/grace9000), a bare photo editor:
+grab a frame here, then edit it there.
 
 ![splice9000](docs/screenshot.png)
 
