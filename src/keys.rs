@@ -47,6 +47,8 @@ pub const COMMANDS: &[(&str, &str, &str)] = &[
     ("panel adapters", "", "Show or hide the Adapters panel"),
     ("install adapter", "", "Install an adapter from a zip or folder"),
     ("catalog", "", "Open the adapter catalog in your browser"),
+    ("sister wave9000", "", "Open the selected media's sound in wave9000"),
+    ("sister grace9000", "", "Open the frame under the playhead in grace9000"),
 ];
 
 pub const EXAMPLE: &str = r#"# splice9000 keys: "key" = "command". Saved changes apply at once.

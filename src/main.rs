@@ -9,22 +9,23 @@
 //! only when there's something new to show.
 
 mod adapters;
+use adapters::Sections;
+// The 9000 series' shared core: the window, the adapter host, the sisters.
+#[cfg(target_os = "macos")]
+use core9000::incoming;
+use core9000::{log, shell, watch};
 mod audio;
 mod export;
 mod hosting;
-mod incoming;
 mod keys;
 mod layout;
-mod log;
 mod media;
 mod menu;
 mod panels;
 mod preview;
 mod settings;
-mod shell;
 mod theme;
 mod timeline;
-mod watch;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -176,6 +177,7 @@ pub struct App {
 }
 
 fn main() {
+    core9000::init(&adapters::APP);
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("splice9000 {}", env!("CARGO_PKG_VERSION"));
         return;
@@ -273,6 +275,7 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 
 impl App {
     fn new(ctx: &egui::Context, dir: PathBuf) -> Self {
+        core9000::init(&adapters::APP);
         incoming::started(ctx);
         for (name, text) in [("settings.toml", settings::EXAMPLE), ("keys.toml", keys::EXAMPLE)] {
             let path = dir.join(name);
@@ -297,7 +300,7 @@ impl App {
         let (tx, adapter_rx) = channel();
         let adapters = {
             let (tx, ctx) = (std::sync::Mutex::new(tx), ctx.clone());
-            let env = adapters::Env { config: dir.clone(), builtin: adapters::builtin_dir(), ffmpeg: None, ffprobe: None };
+            let env = adapters::Env { config: dir.clone(), builtin: adapters::builtin_dir(), ..adapters::Env::default() };
             adapters::Host::new(env, move |m| {
                 let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(m);
                 ctx.request_repaint();
@@ -397,8 +400,16 @@ impl App {
             self.requested = None;
             self.encoders = None;
             // Adapters get the same ffmpeg.
-            self.adapters.env.ffmpeg = self.tools.as_ref().map(|t| t.ffmpeg.clone());
-            self.adapters.env.ffprobe = self.tools.as_ref().map(|t| t.ffprobe.clone());
+            // Adapters use the same ffmpeg, so they need none of their own.
+            let (mut init, mut vars) = (serde_json::Map::new(), Vec::new());
+            for (key, path) in [("ffmpeg", self.tools.as_ref().map(|t| &t.ffmpeg)), ("ffprobe", self.tools.as_ref().map(|t| &t.ffprobe))] {
+                init.insert(key.into(), path.map_or(serde_json::Value::Null, |p| p.to_string_lossy().into()));
+                if let Some(p) = path {
+                    vars.push((format!("SPLICE9000_{}", key.to_uppercase()), p.clone().into_os_string()));
+                }
+            }
+            self.adapters.env.init = init;
+            self.adapters.env.vars = vars;
         }
         // Keys (the user's and adapters') and the menus that show them.
         self.refresh_commands();
@@ -605,9 +616,57 @@ impl App {
                 self.save_layout();
             }
             "config" => open_folder(&self.dir),
+            "sister wave9000" => self.sound_to_wave9000(),
+            "sister grace9000" => self.frame_to_grace9000(),
             "quit" => self.ctx.send_viewport_cmd(ViewportCommand::Close),
             other => log::error(format!("No command called \"{other}\"")),
         }
+    }
+
+    /// The media to hand a sister: the selected file, else the one under
+    /// the playhead.
+    fn current_media(&self) -> Option<&Media> {
+        let i = self.selected_media.or_else(|| self.timeline.locate(self.playhead).map(|(c, _)| self.timeline.clips()[c].media))?;
+        self.media.get(i)
+    }
+
+    /// Opens the selected media in wave9000, to work on its sound.
+    fn sound_to_wave9000(&mut self) {
+        let Some(m) = self.current_media() else { return self.say("Select media, or put the playhead on a clip, to open its sound in wave9000.") };
+        if !m.audio {
+            return self.say(format!("{} has no sound.", m.name()));
+        }
+        let path = m.path.clone();
+        if let Err(e) = core9000::sisters::get("wave9000").expect("a sister").open(&[&path], None) {
+            self.say(e);
+        }
+    }
+
+    /// Saves the frame under the playhead, full size, and opens it in
+    /// grace9000. Frames are kept in the config folder's `frames`.
+    fn frame_to_grace9000(&mut self) {
+        let Some(tools) = self.tools.clone() else { return self.say("Saving a frame needs ffmpeg.") };
+        let Some((i, src)) = self.timeline.locate(self.playhead) else { return self.say("Put the playhead on a clip to open its frame in grace9000.") };
+        let m = &self.media[self.timeline.clips()[i].media];
+        let frame = (src * m.fps + 1e-6).floor();
+        let stem = m.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "frame".into());
+        let out = self.dir.join("frames").join(format!("{stem} frame {frame}.png"));
+        let (input, at) = (m.path.clone(), (frame / m.fps - 1e-4).max(0.0));
+        std::thread::spawn(move || {
+            let _ = std::fs::create_dir_all(out.parent().expect("in frames"));
+            let ok = media::quiet(std::process::Command::new(&tools.ffmpeg))
+                .args(["-hide_banner", "-loglevel", "error", "-y", "-ss", &format!("{at:.6}"), "-i"])
+                .arg(&input)
+                .args(["-frames:v", "1", "-update", "1"])
+                .arg(&out)
+                .status()
+                .is_ok_and(|s| s.success());
+            let result = if ok { core9000::sisters::get("grace9000").expect("a sister").open(&[&out], None) } else { Err(format!("ffmpeg couldn't save the frame of {}", input.display())) };
+            match result {
+                Ok(()) => log::info(format!("Opened {} in grace9000", out.display())),
+                Err(e) => log::error(e),
+            }
+        });
     }
 
     /// Hides a panel that's showing, or shows one that isn't (beside the
@@ -1028,6 +1087,13 @@ impl App {
     fn open_paths(&mut self, paths: Vec<PathBuf>) {
         if paths.is_empty() {
             return;
+        }
+        // A sister's files go to her: sound to wave9000, photos to
+        // grace9000, documents to text9000, comics to leaf9000.
+        use core9000::sisters::{VIDEO, is};
+        let (paths, problems) = core9000::sisters::hand_off(paths, |p| is(p, VIDEO) || is(p, &["splice"]) || adapters::is_package(p));
+        for p in problems {
+            self.say(p);
         }
         // Adapters (zips or folders with an adapter.toml) are offered for
         // install; the rest is projects and media.

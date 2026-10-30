@@ -3,6 +3,7 @@
 
 use egui::{Align, Align2, Color32, CursorIcon, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 
+use crate::adapters::Sections;
 use crate::layout::Part;
 use crate::{App, keys, log};
 
@@ -470,15 +471,15 @@ fn adapters_panel(app: &mut App, ui: &mut Ui) {
                 ui.label(RichText::new(&m.description).color(pal.weak));
             }
             let can = if m.run.is_empty() {
-                if m.exports.is_empty() { "No program: nothing runs" } else { "Presets only: nothing runs" }.to_owned()
+                if m.extra.exports.is_empty() { "No program: nothing runs" } else { "Presets only: nothing runs" }.to_owned()
             } else if m.permissions.is_empty() {
                 "No permissions".to_owned()
             } else {
                 format!("Can {}", m.permissions.iter().map(|p| crate::adapters::describe(p)).collect::<Vec<_>>().join("; "))
             };
             ui.label(RichText::new(can).small().color(pal.weak));
-            if !m.exports.is_empty() {
-                let list: Vec<&str> = m.exports.iter().map(|e| e.label.as_str()).collect();
+            if !m.extra.exports.is_empty() {
+                let list: Vec<&str> = m.extra.exports.iter().map(|e| e.label.as_str()).collect();
                 ui.label(RichText::new(format!("Export formats: {}", list.join(", "))).small().color(pal.weak));
             }
             ui.horizontal_wrapped(|ui| {

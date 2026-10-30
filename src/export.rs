@@ -481,7 +481,7 @@ mod tests {
         };
         let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/adapters/export-presets/adapter.toml")).unwrap();
         let manifest: crate::adapters::Manifest = toml::from_str(&text).unwrap();
-        assert!(manifest.exports.len() >= 7);
+        assert!(manifest.extra.exports.len() >= 7);
         let dir = std::env::temp_dir().join(format!("splice9000-presets-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let clip = dir.join("in.mp4");
@@ -501,7 +501,7 @@ mod tests {
         // Some ffmpeg builds leave these out; splice9000 says so instead of
         // exporting. Anything else missing is a mistake in the preset.
         const OPTIONAL: [&str; 4] = ["libvpx-vp9", "libopus", "libx265", "libsvtav1"];
-        for p in &manifest.exports {
+        for p in &manifest.extra.exports {
             let missing: Vec<String> = encoders_needed(&s, Some(p)).into_iter().filter(|e| !have.contains(e)).collect();
             if !missing.is_empty() {
                 assert!(missing.iter().all(|e| OPTIONAL.contains(&e.as_str())), "{}: no encoder {missing:?}", p.label);

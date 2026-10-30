@@ -21,9 +21,7 @@ For people changing the code. The ideals behind these choices are in
 | `media.rs` | finding ffmpeg, reading files with ffprobe |
 | `keys.rs` | `COMMANDS`, the one list of commands, and `keys.toml` |
 | `settings.rs` | `settings.toml` |
-| `watch.rs` | notices saved config files (from Leaf) |
-| `shell/` | the window, drawn by the CPU (from Folio) |
-| `log.rs` | the Log panel's lines |
+| core9000 | the window (drawn by the CPU), the adapter host, the family protocol, the sisters, the config watcher, files macOS hands over, the log: shared by the 9000 series ([solacecasino/core9000](https://github.com/solacecasino/core9000)) |
 
 ## One owner of state
 
@@ -69,7 +67,7 @@ Frames come out of ffmpeg already scaled to the preview panel's exact pixel
 size (`fps` first, then `scale`, so frames that would be dropped aren't
 scaled), as RGBA read straight into the texture's own memory. Shown at that
 size on whole pixels, the CPU renderer copies them instead of filtering them
-(`draw_rect` in `shell/raster.rs`).
+(`draw_rect` in core9000's `shell/raster.rs`).
 
 Playing streams each clip from one ffmpeg process. The picture is paced by
 the sound: late frames are dropped, not shown late. The next
