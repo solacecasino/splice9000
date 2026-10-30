@@ -85,6 +85,23 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>© 2026 Vishal Mohan · MIT License</string>
+  <!-- Its own files open here by double-click; the media only lists it
+       under Open With, so no other app's defaults change. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>splice9000 Project</string>
+      <key>CFBundleTypeExtensions</key><array><string>splice</string></array>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Owner</string>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key><string>Video</string>
+      <key>CFBundleTypeExtensions</key><array><string>mp4</string><string>mov</string><string>m4v</string><string>mkv</string><string>webm</string><string>avi</string><string>mpg</string><string>mpeg</string><string>mts</string><string>m2ts</string><string>wmv</string><string>flv</string><string>3gp</string></array>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST
