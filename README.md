@@ -10,6 +10,12 @@ mix its sound on tracks, then bring the WAV back here. Its sister is
 [grace9000](https://github.com/solacecasino/grace9000), a bare photo editor:
 grab a frame here, then edit it there.
 
+The whole 9000 series: [text9000](https://github.com/solacecasino/text9000)
+(writing), [splice9000](https://github.com/solacecasino/splice9000) (video),
+[wave9000](https://github.com/solacecasino/wave9000) (sound),
+[grace9000](https://github.com/solacecasino/grace9000) (photos) and
+[leaf9000](https://github.com/solacecasino/leaf9000) (comics and books).
+
 ![splice9000](docs/screenshot.png)
 
 It's a prototype (0.0.1): one video track, cuts and trims, preview with
